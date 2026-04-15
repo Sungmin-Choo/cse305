@@ -4,6 +4,6 @@ Chloe Darosa
 
 Sungmin Choo
 
-Jaeheon Par
+Jaeheon Park
 
 Jaehun Yoo
