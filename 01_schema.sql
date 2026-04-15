@@ -32,8 +32,11 @@ CREATE TABLE public."AIRPORT" (
 -- AIRCRAFT
 CREATE TABLE public."AIRCRAFT" (
   aircraft_id  uuid     NOT NULL DEFAULT gen_random_uuid(),
+  airline_id   uuid     NOT NULL,
   model        varchar  NOT NULL,
   CONSTRAINT AIRCRAFT_pkey PRIMARY KEY (aircraft_id)
+  CONSTRAINT AIRCRAFT_airline_fkey FOREIGN KEY (airline_id)
+    REFERENCES public."AIRLINE" (airline_id)
 );
 
 -- CUSTOMER
@@ -97,7 +100,6 @@ CREATE TABLE public."SEAT_INVENTORY" (
 -- Regular Flight Schedule Table
 CREATE TABLE public."FLIGHT_SCHEDULE" (
   schedule_id         uuid       NOT NULL DEFAULT gen_random_uuid(),
-  airline_id          uuid       NOT NULL,  -- Operating airline
   aircraft_id         uuid       NULL,      -- Default assigned aircraft (schedule level)
   depart_airport_iata varchar(3) NOT NULL,  -- Departure airport (NULL → NOT NULL)
   dest_airport_iata   varchar(3) NOT NULL,  -- Destination airport (NULL → NOT NULL)
@@ -112,8 +114,6 @@ CREATE TABLE public."FLIGHT_SCHEDULE" (
   CONSTRAINT FLIGHT_SCHEDULE_date_check    CHECK (valid_from <= valid_until),
   -- Departure and destination airports must not be the same
   CONSTRAINT FLIGHT_SCHEDULE_route_check   CHECK (depart_airport_iata != dest_airport_iata),
-  CONSTRAINT FLIGHT_SCHEDULE_airline_fkey  FOREIGN KEY (airline_id)
-    REFERENCES public."AIRLINE" (airline_id),
   CONSTRAINT FLIGHT_SCHEDULE_aircraft_fkey FOREIGN KEY (aircraft_id)
     REFERENCES public."AIRCRAFT" (aircraft_id),
   CONSTRAINT FLIGHT_SCHEDULE_depart_fkey   FOREIGN KEY (depart_airport_iata)
