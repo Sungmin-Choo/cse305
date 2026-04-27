@@ -1,7 +1,33 @@
 -- ============================================================
--- University Airline Reservation System
--- CSE 305 Term Project - Optimized PostgreSQL Schema
+-- Airline Reservation System (AirBooking)
+-- CSE 305 Term Project — Physical Asset Model Schema
 -- ============================================================
+-- Execution order: 01_schema.sql → 02_functions.sql → 03_seed_sample_data.sql
+-- ============================================================
+
+-- ============================================================
+-- STEP 0. CLEAN UP (drop in reverse dependency order)
+-- ============================================================
+DROP VIEW  IF EXISTS public."FLIGHT_AVAILABILITY_VIEW" CASCADE;
+DROP VIEW  IF EXISTS public."REVENUE_STATS_VIEW"       CASCADE;
+DROP VIEW  IF EXISTS public."BOOKING_VIEW"             CASCADE;
+DROP VIEW  IF EXISTS public."AIRCRAFT_SUMMARY_VIEW"    CASCADE;
+
+DROP TABLE IF EXISTS public."REFUND"           CASCADE;
+DROP TABLE IF EXISTS public."TICKET"           CASCADE;
+DROP TABLE IF EXISTS public."PAYMENT"          CASCADE;
+DROP TABLE IF EXISTS public."BOOKING"          CASCADE;
+DROP TABLE IF EXISTS public."FLIGHT"           CASCADE;
+DROP TABLE IF EXISTS public."STOPOVER"         CASCADE;
+DROP TABLE IF EXISTS public."FLIGHT_SCHEDULE"  CASCADE;
+DROP TABLE IF EXISTS public."SEAT_INVENTORY"   CASCADE;
+DROP TABLE IF EXISTS public."SEAT_CLASS"       CASCADE;
+DROP TABLE IF EXISTS public."AIRCRAFT"         CASCADE;
+DROP TABLE IF EXISTS public."STAFF"            CASCADE;
+DROP TABLE IF EXISTS public."CUSTOMER"         CASCADE;
+DROP TABLE IF EXISTS public."AIRPORT"          CASCADE;
+DROP TABLE IF EXISTS public."AIRLINE"          CASCADE;
+
 
 -- ============================================================
 -- STEP 1. CREATE TABLES
@@ -10,9 +36,9 @@
 -- AIRLINE
 CREATE TABLE public."AIRLINE" (
   airline_id  uuid       NOT NULL DEFAULT gen_random_uuid(),
-  iata_code   varchar(3) NOT NULL,
-  name        varchar    NOT NULL,
-  country     varchar    NULL,
+  iata_code   varchar(3) NOT NULL,            -- IATA 2-3 letter code
+  name        varchar    NOT NULL,            -- Airline name
+  country     varchar    NULL,                -- Country of origin
   CONSTRAINT AIRLINE_pkey          PRIMARY KEY (airline_id),
   CONSTRAINT AIRLINE_iata_code_key UNIQUE (iata_code)
 );
@@ -20,30 +46,30 @@ CREATE TABLE public."AIRLINE" (
 -- AIRPORT
 CREATE TABLE public."AIRPORT" (
   airport_id  uuid       NOT NULL DEFAULT gen_random_uuid(),
-  iata_code   varchar(3) NOT NULL,
-  name        varchar    NOT NULL,
-  country     varchar    NOT NULL,
-  city        varchar    NOT NULL,
+  iata_code   varchar(3) NOT NULL,            -- IATA airport code
+  name        varchar    NOT NULL,            -- Airport name
+  country     varchar    NOT NULL,            -- Country
+  city        varchar    NOT NULL,            -- City
   CONSTRAINT AIRPORT_pkey          PRIMARY KEY (airport_id),
   CONSTRAINT AIRPORT_iata_code_key UNIQUE (iata_code),
   CONSTRAINT AIRPORT_name_key      UNIQUE (name)
 );
 
--- AIRCRAFT
+-- AIRCRAFT — Physical Asset Model: airlines own aircraft
 CREATE TABLE public."AIRCRAFT" (
-  aircraft_id  uuid     NOT NULL DEFAULT gen_random_uuid(),
-  airline_id   uuid     NOT NULL,
-  model        varchar  NOT NULL,
-  CONSTRAINT AIRCRAFT_pkey PRIMARY KEY (aircraft_id)
+  aircraft_id  uuid    NOT NULL DEFAULT gen_random_uuid(),
+  airline_id   uuid    NOT NULL,              -- Owning airline (FK)
+  model        varchar NOT NULL,              -- Aircraft model (e.g., Boeing 777-300ER)
+  CONSTRAINT AIRCRAFT_pkey         PRIMARY KEY (aircraft_id),
   CONSTRAINT AIRCRAFT_airline_fkey FOREIGN KEY (airline_id)
-    REFERENCES public."AIRLINE" (airline_id)
+    REFERENCES public."AIRLINE" (airline_id) ON DELETE CASCADE
 );
 
 -- CUSTOMER
 CREATE TABLE public."CUSTOMER" (
   customer_id  uuid    NOT NULL DEFAULT gen_random_uuid(),
   email        varchar NOT NULL,
-  password     varchar NOT NULL,
+  password     varchar NOT NULL,              -- bcrypt hash
   name         varchar NOT NULL,
   passport     varchar NULL,
   CONSTRAINT CUSTOMER_pkey      PRIMARY KEY (customer_id),
@@ -62,57 +88,53 @@ CREATE TABLE public."STAFF" (
   CONSTRAINT STAFF_role_check CHECK (role IN ('admin', 'agent', 'manager'))
 );
 
--- Seat Class
+-- SEAT_CLASS (seat classes per aircraft)
 CREATE TABLE public."SEAT_CLASS" (
   class_id    uuid     NOT NULL DEFAULT gen_random_uuid(),
-  class_name  varchar  NOT NULL,            -- Seat class name
-  aircraft_id uuid     NOT NULL,            -- Associated aircraft
-  seat_count  smallint NOT NULL,            -- Number of seats for this class
-  price       numeric  NOT NULL,            -- Base price (NULL → NOT NULL enforcement)
+  class_name  varchar  NOT NULL,              -- First / Business / Economy
+  aircraft_id uuid     NOT NULL,              -- Associated aircraft
+  seat_count  smallint NOT NULL,              -- Number of seats in this class
+  price       numeric  NOT NULL,              -- Base price
   CONSTRAINT SEAT_CLASS_pkey              PRIMARY KEY (class_id),
-  -- Only 3 seat classes allowed
   CONSTRAINT SEAT_CLASS_class_name_check  CHECK (class_name IN ('First', 'Business', 'Economy')),
-  -- Seat count must be positive
   CONSTRAINT SEAT_CLASS_seat_count_check  CHECK (seat_count > 0),
-  -- Price must be >= 0
   CONSTRAINT SEAT_CLASS_price_check       CHECK (price >= 0),
-  -- Same class should not be duplicated on same aircraft
+  -- Same class cannot be duplicated on the same aircraft
   CONSTRAINT SEAT_CLASS_unique            UNIQUE (aircraft_id, class_name),
   CONSTRAINT SEAT_CLASS_aircraft_fkey     FOREIGN KEY (aircraft_id)
     REFERENCES public."AIRCRAFT" (aircraft_id) ON DELETE CASCADE
 );
 
--- Seat Inventory Table (Individual seats by aircraft)
+-- SEAT_INVENTORY (physical seats — auto-generated by trigger)
 CREATE TABLE public."SEAT_INVENTORY" (
   seat_id     uuid    NOT NULL DEFAULT gen_random_uuid(),
-  class_id    uuid    NOT NULL,             -- Associated seat class
-  aircraft_id uuid    NOT NULL,             -- Associated aircraft
-  seat_number varchar NOT NULL,             -- Seat number (e.g. 1A, 12C)
+  class_id    uuid    NOT NULL,               -- Associated seat class
+  aircraft_id uuid    NOT NULL,               -- Associated aircraft
+  seat_number varchar NOT NULL,               -- Seat label (e.g., 1A, 20C)
   CONSTRAINT SEAT_INVENTORY_pkey          PRIMARY KEY (seat_id),
   CONSTRAINT SEAT_INVENTORY_class_fkey    FOREIGN KEY (class_id)
     REFERENCES public."SEAT_CLASS" (class_id) ON DELETE CASCADE,
   CONSTRAINT SEAT_INVENTORY_aircraft_fkey FOREIGN KEY (aircraft_id)
     REFERENCES public."AIRCRAFT" (aircraft_id) ON DELETE CASCADE,
-  -- Same seat number should not be duplicated on same aircraft
+  -- Same seat number cannot be duplicated on the same aircraft
   CONSTRAINT SEAT_INVENTORY_unique        UNIQUE (aircraft_id, seat_number)
 );
 
--- Regular Flight Schedule Table
+-- FLIGHT_SCHEDULE (recurring schedules)
+-- airline_id removed: airline is derived via Schedule → Aircraft → Airline
 CREATE TABLE public."FLIGHT_SCHEDULE" (
   schedule_id         uuid       NOT NULL DEFAULT gen_random_uuid(),
-  aircraft_id         uuid       NULL,      -- Default assigned aircraft (schedule level)
-  depart_airport_iata varchar(3) NOT NULL,  -- Departure airport (NULL → NOT NULL)
-  dest_airport_iata   varchar(3) NOT NULL,  -- Destination airport (NULL → NOT NULL)
-  flight_number       varchar    NOT NULL,  -- Flight number (e.g. KE001) (NULL → NOT NULL)
-  depart_time         time       NOT NULL,  -- Departure time
-  arrival_time        time       NOT NULL,  -- Arrival time
-  days_of_week        varchar    NOT NULL,  -- Operating days (e.g. 'Mon,Wed,Fri')
-  valid_from          date       NOT NULL,  -- Schedule validity start date
-  valid_until         date       NOT NULL,  -- Schedule validity end date
+  aircraft_id         uuid       NOT NULL,    -- Assigned aircraft (mandatory; airline derived from here)
+  depart_airport_iata varchar(3) NOT NULL,    -- Departure airport IATA code
+  dest_airport_iata   varchar(3) NOT NULL,    -- Destination airport IATA code
+  flight_number       varchar    NOT NULL,    -- Flight number (e.g., KE001)
+  depart_time         time       NOT NULL,    -- Departure time
+  arrival_time        time       NOT NULL,    -- Arrival time
+  days_of_week        varchar    NOT NULL,    -- Operating days (e.g., 'Mon,Wed,Fri')
+  valid_from          date       NOT NULL,    -- Schedule validity start date
+  valid_until         date       NOT NULL,    -- Schedule validity end date
   CONSTRAINT FLIGHT_SCHEDULE_pkey          PRIMARY KEY (schedule_id),
-  -- Valid start date must be earlier than or equal to end date
   CONSTRAINT FLIGHT_SCHEDULE_date_check    CHECK (valid_from <= valid_until),
-  -- Departure and destination airports must not be the same
   CONSTRAINT FLIGHT_SCHEDULE_route_check   CHECK (depart_airport_iata != dest_airport_iata),
   CONSTRAINT FLIGHT_SCHEDULE_aircraft_fkey FOREIGN KEY (aircraft_id)
     REFERENCES public."AIRCRAFT" (aircraft_id),
@@ -122,41 +144,58 @@ CREATE TABLE public."FLIGHT_SCHEDULE" (
     REFERENCES public."AIRPORT" (iata_code)
 );
 
--- Individual Flight Table (Created from schedule)
+-- STOPOVER (layover points for multi-leg routes)
+-- Assumption: one booking occupies the seat for the entire journey
+-- (no segment-based seat inventory)
+CREATE TABLE public."STOPOVER" (
+  stopover_id            uuid       NOT NULL DEFAULT gen_random_uuid(),
+  schedule_id            uuid       NOT NULL,    -- Parent schedule
+  airport_iata           varchar(3) NOT NULL,    -- Stopover airport IATA code
+  arrival_time_offset    interval   NOT NULL,    -- Time after departure to arrive at stop
+  departure_time_offset  interval   NOT NULL,    -- Time after departure to depart from stop
+  stop_order             int        NOT NULL,    -- Stopover sequence (1 = first stop)
+  CONSTRAINT STOPOVER_pkey           PRIMARY KEY (stopover_id),
+  CONSTRAINT STOPOVER_order_check    CHECK (stop_order > 0),
+  CONSTRAINT STOPOVER_time_check     CHECK (departure_time_offset > arrival_time_offset),
+  CONSTRAINT STOPOVER_schedule_fkey  FOREIGN KEY (schedule_id)
+    REFERENCES public."FLIGHT_SCHEDULE" (schedule_id) ON DELETE CASCADE,
+  CONSTRAINT STOPOVER_airport_fkey   FOREIGN KEY (airport_iata)
+    REFERENCES public."AIRPORT" (iata_code),
+  -- Same stop_order cannot be duplicated on the same schedule
+  CONSTRAINT STOPOVER_unique         UNIQUE (schedule_id, stop_order)
+);
+
+-- FLIGHT (individual flights generated from schedules)
 CREATE TABLE public."FLIGHT" (
   flight_id    uuid        NOT NULL DEFAULT gen_random_uuid(),
-  schedule_id  uuid        NOT NULL,        -- Source schedule
-  aircraft_id  uuid        NOT NULL,        -- Assigned aircraft
-  flight_date  date        NOT NULL,        -- Flight date
-  depart_time  timestamptz NOT NULL,        -- Departure datetime
-  arrival_time timestamptz NOT NULL,        -- Arrival datetime
+  schedule_id  uuid        NOT NULL,            -- Source schedule
+  aircraft_id  uuid        NOT NULL,            -- Assigned aircraft
+  flight_date  date        NOT NULL,            -- Operating date
+  depart_time  timestamptz NOT NULL,            -- Departure datetime
+  arrival_time timestamptz NOT NULL,            -- Arrival datetime
   status       varchar     NOT NULL DEFAULT 'scheduled',
   CONSTRAINT FLIGHT_pkey           PRIMARY KEY (flight_id),
-  -- Flight status must be a predefined value
   CONSTRAINT FLIGHT_status_check   CHECK (status IN ('scheduled', 'departed', 'arrived', 'cancelled')),
-  -- Departure time must be earlier than arrival time
   CONSTRAINT FLIGHT_time_check     CHECK (depart_time < arrival_time),
   CONSTRAINT FLIGHT_schedule_fkey  FOREIGN KEY (schedule_id)
     REFERENCES public."FLIGHT_SCHEDULE" (schedule_id),
   CONSTRAINT FLIGHT_aircraft_fkey  FOREIGN KEY (aircraft_id)
     REFERENCES public."AIRCRAFT" (aircraft_id),
-  -- Only one flight per schedule on the same date
+  -- Only one flight per schedule on a given date
   CONSTRAINT FLIGHT_unique         UNIQUE (schedule_id, flight_date)
 );
 
--- Booking Table
+-- BOOKING
 CREATE TABLE public."BOOKING" (
   booking_id  uuid        NOT NULL DEFAULT gen_random_uuid(),
-  flight_id   uuid        NOT NULL,         -- Booked flight
-  customer_id uuid        NOT NULL,         -- Booking customer
-  seat_id     uuid        NOT NULL,         -- Selected seat
+  flight_id   uuid        NOT NULL,             -- Booked flight
+  customer_id uuid        NOT NULL,             -- Booking customer
+  seat_id     uuid        NOT NULL,             -- Selected physical seat
   booked_at   timestamptz NOT NULL DEFAULT now(),
   status      varchar     NOT NULL DEFAULT 'confirmed',
-  price       numeric     NOT NULL,         -- Booking amount
+  price       numeric     NOT NULL,             -- Booking amount
   CONSTRAINT BOOKING_pkey           PRIMARY KEY (booking_id),
-  -- Booking status must be a predefined value
   CONSTRAINT BOOKING_status_check   CHECK (status IN ('confirmed', 'cancelled')),
-  -- Price must be >= 0
   CONSTRAINT BOOKING_price_check    CHECK (price >= 0),
   CONSTRAINT BOOKING_flight_fkey    FOREIGN KEY (flight_id)
     REFERENCES public."FLIGHT" (flight_id),
@@ -166,56 +205,51 @@ CREATE TABLE public."BOOKING" (
     REFERENCES public."SEAT_INVENTORY" (seat_id)
 );
 
--- Prevent duplicate seats for active bookings (excluding cancelled bookings)
+-- Prevent duplicate seats on active bookings (partial unique index)
 CREATE UNIQUE INDEX booking_active_seat_unique
   ON public."BOOKING" (flight_id, seat_id)
   WHERE status != 'cancelled';
 
--- Payment Table
+-- PAYMENT
 CREATE TABLE public."PAYMENT" (
   payment_id  uuid        NOT NULL DEFAULT gen_random_uuid(),
-  booking_id  uuid        NOT NULL,         -- Associated booking
-  amount      numeric     NOT NULL,         -- Payment amount
-  method      varchar     NOT NULL DEFAULT 'credit_card', -- Payment method
+  booking_id  uuid        NOT NULL,             -- Associated booking
+  amount      numeric     NOT NULL,             -- Payment amount
+  method      varchar     NOT NULL DEFAULT 'credit_card',
   status      varchar     NOT NULL DEFAULT 'completed',
   paid_at     timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT PAYMENT_pkey          PRIMARY KEY (payment_id),
-  -- Payment status must be a predefined value
   CONSTRAINT PAYMENT_status_check  CHECK (status IN ('completed', 'refunded', 'failed')),
-  -- Payment method must be a predefined value
   CONSTRAINT PAYMENT_method_check  CHECK (method IN ('credit_card', 'debit_card', 'bank_transfer', 'cash')),
-  -- Payment amount must be positive
   CONSTRAINT PAYMENT_amount_check  CHECK (amount > 0),
   CONSTRAINT PAYMENT_booking_key   UNIQUE (booking_id),
   CONSTRAINT PAYMENT_booking_fkey  FOREIGN KEY (booking_id)
     REFERENCES public."BOOKING" (booking_id)
 );
 
--- Refund Table
+-- REFUND
 CREATE TABLE public."REFUND" (
   refund_id   uuid        NOT NULL DEFAULT gen_random_uuid(),
-  payment_id  uuid        NOT NULL,         -- Source payment
-  amount      numeric     NOT NULL,         -- Refund amount
+  payment_id  uuid        NOT NULL,             -- Source payment
+  amount      numeric     NOT NULL,
   status      varchar     NOT NULL DEFAULT 'pending',
-  refunded_at timestamptz NULL,             -- Refund processed datetime
+  refunded_at timestamptz NULL,
   CONSTRAINT REFUND_pkey          PRIMARY KEY (refund_id),
-  -- Refund status must be a predefined value
   CONSTRAINT REFUND_status_check  CHECK (status IN ('pending', 'completed', 'rejected')),
-  -- Refund amount must be positive
   CONSTRAINT REFUND_amount_check  CHECK (amount > 0),
   CONSTRAINT REFUND_payment_key   UNIQUE (payment_id),
   CONSTRAINT REFUND_payment_fkey  FOREIGN KEY (payment_id)
     REFERENCES public."PAYMENT" (payment_id)
 );
 
--- Ticket Table
+-- TICKET
 CREATE TABLE public."TICKET" (
   ticket_id   uuid        NOT NULL DEFAULT gen_random_uuid(),
-  booking_id  uuid        NOT NULL,         -- Associated booking
-  ticket_no   varchar     NOT NULL,         -- Ticket number
+  booking_id  uuid        NOT NULL,
+  ticket_no   varchar     NOT NULL,             -- Ticket number
   issued_at   timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT TICKET_pkey          PRIMARY KEY (ticket_id),
-  CONSTRAINT TICKET_no_key        UNIQUE (ticket_no),   -- Ensure ticket number uniqueness
+  CONSTRAINT TICKET_no_key        UNIQUE (ticket_no),
   CONSTRAINT TICKET_booking_key   UNIQUE (booking_id),
   CONSTRAINT TICKET_booking_fkey  FOREIGN KEY (booking_id)
     REFERENCES public."BOOKING" (booking_id)
@@ -223,42 +257,48 @@ CREATE TABLE public."TICKET" (
 
 
 -- ============================================================
--- STEP 2. INDEXES (Search performance optimization)
+-- STEP 2. INDEXES (search performance optimization)
 -- ============================================================
 
--- Flight search: fast navigation by date + schedule
-CREATE INDEX idx_flight_date ON public."FLIGHT" (flight_date);
+-- Flight lookup by date and status
+CREATE INDEX idx_flight_date   ON public."FLIGHT" (flight_date);
 CREATE INDEX idx_flight_status ON public."FLIGHT" (status);
 
--- Schedule search: fast navigation by departure/destination airports
+-- Schedule lookup by departure/destination airports
 CREATE INDEX idx_schedule_route ON public."FLIGHT_SCHEDULE" (depart_airport_iata, dest_airport_iata);
 CREATE INDEX idx_schedule_valid ON public."FLIGHT_SCHEDULE" (valid_from, valid_until);
 
--- Booking search: query bookings by customer and flight
+-- Booking lookup by customer, flight, and status
 CREATE INDEX idx_booking_customer ON public."BOOKING" (customer_id);
-CREATE INDEX idx_booking_flight ON public."BOOKING" (flight_id);
-CREATE INDEX idx_booking_status ON public."BOOKING" (status);
+CREATE INDEX idx_booking_flight   ON public."BOOKING" (flight_id);
+CREATE INDEX idx_booking_status   ON public."BOOKING" (status);
 
--- Seat inventory: query seats by aircraft
+-- Seat inventory lookup by aircraft and class
 CREATE INDEX idx_seat_aircraft ON public."SEAT_INVENTORY" (aircraft_id);
+CREATE INDEX idx_seat_class    ON public."SEAT_INVENTORY" (class_id);
+
+-- Stopover lookup by schedule
+CREATE INDEX idx_stopover_schedule ON public."STOPOVER" (schedule_id);
 
 
 -- ============================================================
 -- STEP 3. VIEWS
 -- ============================================================
 
--- ▼ VIEW to replace AIRCRAFT's total_seats
--- Dynamically calculate total seats by aircraft from SEAT_INVENTORY
+-- Aircraft Summary View (includes airline info and total seat count)
 CREATE OR REPLACE VIEW public."AIRCRAFT_SUMMARY_VIEW" AS
 SELECT
   a.aircraft_id,
   a.model,
+  al.name                    AS airline_name,
   COUNT(si.seat_id)::smallint AS total_seats
 FROM      public."AIRCRAFT"       a
+JOIN      public."AIRLINE"        al ON al.airline_id  = a.airline_id
 LEFT JOIN public."SEAT_INVENTORY" si ON si.aircraft_id = a.aircraft_id
-GROUP BY  a.aircraft_id, a.model;
+GROUP BY  a.aircraft_id, a.model, al.name;
 
--- ▼ Booking Details VIEW (for customers)
+-- Booking Detail View (for customers)
+-- Airline derived via: Flight → Aircraft → Airline
 CREATE OR REPLACE VIEW public."BOOKING_VIEW" AS
 SELECT
   b.booking_id,
@@ -272,6 +312,7 @@ SELECT
   fs.flight_number,
   fs.depart_airport_iata,
   fs.dest_airport_iata,
+  al.name                 AS airline_name,
   si.seat_number,
   sc.class_name,
   b.status,
@@ -282,15 +323,19 @@ FROM       public."BOOKING"         b
 JOIN       public."CUSTOMER"        c  ON c.customer_id  = b.customer_id
 JOIN       public."FLIGHT"          f  ON f.flight_id    = b.flight_id
 JOIN       public."FLIGHT_SCHEDULE" fs ON fs.schedule_id = f.schedule_id
+JOIN       public."AIRCRAFT"        ac ON ac.aircraft_id = f.aircraft_id
+JOIN       public."AIRLINE"         al ON al.airline_id  = ac.airline_id
 JOIN       public."SEAT_INVENTORY"  si ON si.seat_id     = b.seat_id
 JOIN       public."SEAT_CLASS"      sc ON sc.class_id    = si.class_id
 LEFT JOIN  public."TICKET"          t  ON t.booking_id   = b.booking_id;
 
--- ▼ Revenue Statistics VIEW (for staff)
+-- Revenue Statistics View (for staff)
+-- Airline derived via: Flight → Aircraft → Airline
 CREATE OR REPLACE VIEW public."REVENUE_STATS_VIEW" AS
 SELECT
   f.flight_id,
   fs.flight_number,
+  al.name                              AS airline_name,
   fs.depart_airport_iata,
   fs.dest_airport_iata,
   f.flight_date,
@@ -304,6 +349,8 @@ SELECT
   )                                    AS load_factor_pct
 FROM       public."FLIGHT"          f
 JOIN       public."FLIGHT_SCHEDULE" fs ON fs.schedule_id = f.schedule_id
+JOIN       public."AIRCRAFT"        ac ON ac.aircraft_id = f.aircraft_id
+JOIN       public."AIRLINE"         al ON al.airline_id  = ac.airline_id
 JOIN       public."BOOKING"         b  ON b.flight_id    = f.flight_id
                                       AND b.status = 'confirmed'
 JOIN       public."PAYMENT"         p  ON p.booking_id   = b.booking_id
@@ -311,14 +358,17 @@ JOIN       public."PAYMENT"         p  ON p.booking_id   = b.booking_id
 JOIN       public."SEAT_INVENTORY"  si ON si.seat_id     = b.seat_id
 JOIN       public."SEAT_CLASS"      sc ON sc.class_id    = si.class_id
 GROUP BY
-  f.flight_id, fs.flight_number,
+  f.flight_id, fs.flight_number, al.name,
   fs.depart_airport_iata, fs.dest_airport_iata,
   f.flight_date, sc.class_name, sc.seat_count;
 
--- ▼ Flight Availability VIEW (for search)
+-- Flight Availability View (for search)
+-- Airline derived via: Flight → Aircraft → Airline
+-- Available seats = physical seats - confirmed bookings
 CREATE OR REPLACE VIEW public."FLIGHT_AVAILABILITY_VIEW" AS
 SELECT
   f.flight_id,
+  f.schedule_id,
   fs.flight_number,
   fs.depart_airport_iata,
   fs.dest_airport_iata,
@@ -333,9 +383,11 @@ SELECT
   sc.seat_count - COALESCE(booked.cnt, 0) AS available_seats
 FROM       public."FLIGHT"          f
 JOIN       public."FLIGHT_SCHEDULE" fs ON fs.schedule_id = f.schedule_id
-JOIN       public."AIRLINE"         al ON al.airline_id  = fs.airline_id
+JOIN       public."AIRCRAFT"        ac ON ac.aircraft_id = f.aircraft_id
+JOIN       public."AIRLINE"         al ON al.airline_id  = ac.airline_id
 JOIN       public."SEAT_CLASS"      sc ON sc.aircraft_id = f.aircraft_id
 LEFT JOIN (
+  -- Count confirmed bookings per flight and seat class
   SELECT
     b.flight_id,
     si.class_id,
@@ -346,5 +398,4 @@ LEFT JOIN (
   GROUP BY b.flight_id, si.class_id
 ) booked ON booked.flight_id = f.flight_id
         AND booked.class_id  = sc.class_id
-WHERE f.status != 'cancelled'
-;
+WHERE f.status != 'cancelled';
