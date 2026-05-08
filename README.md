@@ -1,162 +1,375 @@
-# ✈️ Airline Reservation System (AirBooking)
+# AirBooking — Airline Reservation System
 
-**CSE 305 Term Project** — Physical Asset Model with Streamlit Dashboard
-
----
-
-## 👥 Team Members
-
-- Chloe Darosa
-- Sungmin Choo
-- Jaeheon Park
-- Jaehun Yoo
+**CSE 305: Principles of Database Systems, Spring 2026**  
+SUNY Korea — Term Project
 
 ---
 
-## 📋 Project Overview
+## Team Members
 
-A full-stack airline reservation system built with **PostgreSQL (Supabase)** and **Streamlit**.
-The system supports two user roles:
-
-| Role       | Capabilities                                                                 |
-| ---------- | ---------------------------------------------------------------------------- |
-| **Staff**  | Create flight schedules, generate flights, view revenue statistics           |
-| **Customer** | Search flights, create bookings (seat selection + payment + ticketing), cancel bookings with refund |
-
-### Core Operations
-
-1. **Generate Flights from Schedule** — Create recurring schedules and generate individual flight records
-2. **Flight Search** — Search by departure/arrival airport, date, and optional seat class
-3. **Create Booking** — Atomic transaction: seat reservation → payment → ticketing
-4. **Cancel Booking & Refund** — Atomic transaction: cancel → seat release → refund
-5. **Revenue Statistics** — Revenue by time period, route, class breakdown, and load factor
-
-### Advanced Features
-
-- **Indexing & Query Optimization** — Indexes on frequently queried columns (flight date, booking status, routes, etc.)
-- **Triggers & Stored Procedures** — Core business logic implemented as PL/pgSQL stored procedures via Supabase RPC
+| Name | Role |
+|---|---|
+| Chloe Darosa | |
+| Sungmin Choo | |
+| Jaeheon Park | |
+| Jaehun Yoo   | |
 
 ---
 
-## 🗂️ Project Structure
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Database | PostgreSQL via Supabase |
+| Backend Logic | PL/pgSQL (Triggers + Stored Procedures) |
+| Frontend | Streamlit (Python) |
+| DB Client | Supabase Python SDK |
+
+---
+
+## Project Structure
 
 ```
 cse305/
-├── .env                      # Supabase connection credentials
-├── 01_schema.sql             # DDL: tables, indexes, views
-├── 02_functions.sql          # PL/pgSQL stored procedures (RPC)
-├── 03_seed_sample_data.sql   # Sample data for testing
-├── app.py                    # Streamlit application (main dashboard)
-└── README.md                 # This file
+├── 01_schema.sql           # DDL: tables, indexes, views
+├── 02_functions.sql        # Triggers and stored procedures
+├── 03_seed_sample_data.sql # Sample data for demonstration
+├── app.py                  # Streamlit application
+├── .env                    # Supabase credentials (not committed)
+└── README.md
 ```
 
 ---
 
-## 🚀 How to Run
+## Setup Instructions
 
-### Prerequisites
-
-- **Python 3.9+**
-- **Supabase** project with PostgreSQL database
-- **pip** (Python package manager)
-
-### Step 1: Install Python Dependencies
+### 1. Install Python Dependencies
 
 ```bash
 pip install streamlit supabase python-dotenv pandas
 ```
 
-### Step 2: Configure Environment Variables
+### 2. Configure Environment Variables
 
-Create a `.env` file in the `cse305/` directory (or edit the existing one):
+Create a `.env` file in the project root:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key-here
 ```
 
-### Step 3: Set Up the Database (SQL)
+### 3. Run SQL Files in Order
 
-> [!IMPORTANT]
-> **If the SQL files have already been executed, you can skip this step entirely.**
-> If you have already run them in the Supabase SQL Editor, proceed directly to Step 4.
+Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 
-Open **Supabase Dashboard → SQL Editor** and run the following files **in order**:
+| Step | File | What it does |
+|---|---|---|
+| 1 | `01_schema.sql` | Drops and recreates all tables, indexes, and views |
+| 2 | `02_functions.sql` | Creates triggers and stored procedures |
+| 3 | `03_seed_sample_data.sql` | Inserts sample airlines, airports, aircraft, customers, staff |
 
-#### 3-1. Create Schema (Tables, Indexes, Views)
+> **Important:** `01_schema.sql` starts with `DROP TABLE IF EXISTS ... CASCADE` for all tables.  
+> Re-running it will **delete all data**. Only run it when doing a full reset.
 
-```
-01_schema.sql
-```
+### 4. Disable Row Level Security (RLS)
 
-- Creates all tables (`AIRLINE`, `AIRPORT`, `AIRCRAFT`, `CUSTOMER`, `FLIGHT_SCHEDULE`, `FLIGHT`, `BOOKING`, `PAYMENT`, `REFUND`, `TICKET`, etc.).
-- Creates indexes for search performance optimization.
-- Creates 4 views (`AIRCRAFT_SUMMARY_VIEW`, `BOOKING_VIEW`, `REVENUE_STATS_VIEW`, `FLIGHT_AVAILABILITY_VIEW`).
+Supabase enables RLS by default. The app uses the `anon` key, which cannot read any rows unless RLS is disabled or SELECT policies are added. Run in SQL Editor:
 
-#### 3-2. Create Stored Procedures (RPC Functions)
-
-```
-02_functions.sql
-```
-
-- `generate_flights()` — Auto-generates individual flights from recurring schedules
-- `search_flights()` — Searches flights by departure/arrival airport, date, and seat class
-- `create_booking()` — Creates a booking (seat reservation → payment → ticketing, atomic transaction)
-- `cancel_booking()` — Cancels a booking and processes refund (atomic transaction)
-- `get_revenue_report()` — Generates revenue statistics report
-
-#### 3-3. Insert Sample Data
-
-```
-03_seed_sample_data.sql
+```sql
+ALTER TABLE public."CUSTOMER"        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."STAFF"           DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."AIRLINE"         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."AIRPORT"         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."AIRCRAFT"        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."SEAT_CLASS"      DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."SEAT_INVENTORY"  DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."FLIGHT_SCHEDULE" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."FLIGHT"          DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."STOPOVER"        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."BOOKING"         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."PAYMENT"         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."REFUND"          DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public."TICKET"          DISABLE ROW LEVEL SECURITY;
 ```
 
-- Inserts sample airlines, airports, aircraft, seat classes, customers, and other test data.
+> **Symptom if skipped:** Login returns "Invalid email or password" even with correct credentials, because the SELECT query silently returns 0 rows.
 
-### Step 4: Run the Application
+### 5. Run the Application
 
 ```bash
-cd cse305
 streamlit run app.py
 ```
 
-The app will automatically open in your browser:
-
-```
-Local URL: http://localhost:8501
-```
+Open `http://localhost:8501` in your browser.
 
 ---
 
-## 🗄️ Database Schema (Physical Asset Model)
+## Demo Accounts
+
+| Role | Email | Password |
+|---|---|---|
+| Customer | `alice@example.com` | `1234` |
+| Customer | `bob@example.com` | `1234` |
+| Staff (Admin) | `admin@airbooking.local` | `1234` |
+
+---
+
+## How to Use the Application
+
+### Authentication (Sidebar)
+
+- **Login tab**: Enter email and password. The app checks the `CUSTOMER` table first, then `STAFF`. On success, role-based navigation is shown in the main area.
+- **Register tab**: Creates a new Customer account. Staff accounts are seeded directly — no self-registration for staff.
+- **Logout**: Available in the sidebar after login.
+
+---
+
+### Customer Portal
+
+After logging in as a Customer, three tabs are shown:
+
+#### Tab 1 — Search Flights
+
+1. Enter **Departure Airport** IATA code (e.g. `ICN`) and **Arrival Airport** IATA code (e.g. `JFK`)
+2. Pick a **Travel Date** and optionally filter by **Seat Class**
+3. Click **Search** — results show flight number, airline, route (with stopovers), departure/arrival times, class, price, and available seats
+4. Copy a **Flight ID** from the results to use in the next tab
+
+> Sample routes in seed data: `ICN→JFK` (Mon/Wed/Fri), `JFK→LHR` (Tue/Thu/Sat), `ICN→LHR` via `DXB` (Mon/Wed/Fri/Sun), `SIN→ICN` (daily). Flights must first be generated by Staff.
+
+#### Tab 2 — Book Flight
+
+1. Paste a **Flight ID** from search results
+2. Select a **Seat Class** — available physical seats load automatically
+3. Pick a **Seat** from the dropdown
+4. Click **Confirm Booking** — the system atomically creates the booking, processes payment, and issues a ticket
+
+#### Tab 3 — My Bookings
+
+1. Click **Load My Bookings** to see all active (confirmed) bookings
+2. Select a booking from the dropdown
+3. Click **Cancel Booking** — the system atomically cancels the booking, marks the payment as refunded, and records a refund entry
+
+---
+
+### Staff Dashboard
+
+After logging in as Staff, four tabs are shown:
+
+#### Tab 1 — Flights
+
+**Create Schedule & Generate Flights:**
+1. Select an aircraft (airline is auto-derived from aircraft ownership)
+2. Set departure/arrival airports, flight number, times, operating days
+3. Set the schedule validity period (Valid From / Valid Until)
+4. Set the generation date range (individual flights to create)
+5. Click **Create Schedule & Generate Flights** — inserts a `FLIGHT_SCHEDULE` record and calls `generate_flights()`
+
+**View Existing Flights:**
+- Pick a date range and click **Load Flights** to see all flights with their availability
+
+#### Tab 2 — Master Data
+
+Full CRUD for all reference tables:
+
+| Sub-tab | Table | Operations |
+|---|---|---|
+| Airlines | `AIRLINE` | Add (IATA code, name, country) / Delete |
+| Airports | `AIRPORT` | Add (IATA code, name, city, country) / Delete |
+| Aircraft | `AIRCRAFT` | Add (select airline, enter model) / Delete |
+| Seat Classes | `SEAT_CLASS` | Add (select aircraft, class, seat count, price) / Delete |
+
+> **Note:** Adding a Seat Class triggers **automatic seat inventory generation** (see Triggers Demo). Deleting an Airline cascades to its Aircraft → Seat Classes → Seat Inventory.
+
+#### Tab 3 — Revenue Statistics
+
+Click **Generate Revenue Report** to see:
+- Revenue breakdown by flight, seat class, and route
+- `class_revenue_pct`: each class's revenue as a percentage of that flight's total
+- `load_factor_percentage`: seats sold / total seats × 100
+- Bar charts: Revenue by Month, by Route, by Seat Class
+
+#### Tab 4 — Triggers Demo
+
+Interactive demonstration of the three database triggers with live SQL code and live execution. See the [Triggers section](#triggers) below for details.
+
+---
+
+## Database Schema
+
+### Entity-Relationship Overview
 
 ```
 AIRLINE ──< AIRCRAFT ──< SEAT_CLASS ──< SEAT_INVENTORY
                 │
                 ├──< FLIGHT_SCHEDULE ──< STOPOVER
                 │           │
-                │           └──< FLIGHT ──< BOOKING ──< PAYMENT ──< REFUND
-                │                              │
-                │                              └──< TICKET
-                │
-                └──────────────────── FLIGHT (aircraft_id FK)
+                └──────────>└──< FLIGHT ──< BOOKING ──< PAYMENT ──< REFUND
+                                               │
+                                               └──< TICKET
 
 CUSTOMER ──< BOOKING
-AIRPORT  ──< FLIGHT_SCHEDULE (depart/dest)
+AIRPORT  ──< FLIGHT_SCHEDULE (depart / dest)
+AIRPORT  ──< STOPOVER
 ```
 
-**Key Design:**
-- **Physical Asset Model**: Airlines own Aircraft → Aircraft have Seat Classes → Seat Classes contain physical Seat Inventory
-- **Airline derivation**: Airline info is derived through `Aircraft → Airline` ownership chain (no redundant airline_id)
-- **Atomic transactions**: Booking and cancellation use stored procedures to ensure atomicity
+### Key Design Decisions
+
+**Physical Asset Model**  
+Airlines own Aircraft. Aircraft have Seat Classes. Seat Classes contain physical Seat Inventory rows. The airline of any flight is always derived via `Flight → Aircraft → Airline` — never stored redundantly.
+
+**Aircraft assignment on Flight**  
+`FLIGHT.aircraft_id` duplicates `FLIGHT_SCHEDULE.aircraft_id` intentionally: it allows individual flights to be reassigned to a different aircraft (common in real operations) without changing the schedule.
+
+**Partial Unique Index for Bookings**  
+```sql
+CREATE UNIQUE INDEX booking_active_seat_unique
+  ON public."BOOKING" (flight_id, seat_id)
+  WHERE status != 'cancelled';
+```
+This prevents double-booking the same seat on the same flight while allowing cancelled bookings to free the seat for rebooking.
+
+**ticket_no is computed, not stored**  
+`TICKET` stores only `booking_id` and `issued_at`. The ticket number displayed in the UI is computed as `'TK-' || replace(booking_id::text, '-', '')` inside `BOOKING_VIEW`. This avoids storing a value that is 100% derivable from the primary key.
 
 ---
 
-## 📊 Tech Stack
+## SQL Implementation
 
-| Layer      | Technology                |
-| ---------- | ------------------------- |
-| Database   | PostgreSQL (Supabase)     |
-| Backend    | PL/pgSQL Stored Procedures |
-| Frontend   | Streamlit (Python)        |
-| ORM/Client | Supabase Python SDK       |
+### Views
+
+| View | Purpose |
+|---|---|
+| `FLIGHT_AVAILABILITY_VIEW` | Used by flight search. Computes `available_seats = seat_count − confirmed bookings` per class per flight |
+| `BOOKING_VIEW` | Used by customers to see booking details including airline, seat, ticket number |
+| `REVENUE_STATS_VIEW` | Used by staff. Aggregates revenue, booking count, and load factor per flight per class |
+| `AIRCRAFT_SUMMARY_VIEW` | Shows each aircraft with its airline name and total seat count |
+
+### Stored Procedures
+
+All core operations are implemented as PL/pgSQL functions callable via Supabase RPC.
+
+#### `generate_flights(p_start_date, p_end_date)`
+
+Iterates every `FLIGHT_SCHEDULE` × every date in the given range. For each combination:
+- Skips dates outside the schedule's `valid_from`/`valid_until`
+- Matches the date's day-of-week against `days_of_week` (e.g. `'Mon,Wed,Fri'`)
+- Skips dates where a flight already exists (`NOT EXISTS` check)
+- Handles overnight flights: if `arrival_time ≤ depart_time`, adds 1 day to arrival datetime
+
+```sql
+SELECT public.generate_flights('2026-05-01', '2026-05-31');
+-- Returns: "N individual flights have been generated from the recurring schedules."
+```
+
+#### `search_flights(p_dep_iata, p_arr_iata, p_travel_date, p_class_name)`
+
+Queries `FLIGHT_AVAILABILITY_VIEW` filtered by route, date, class, and `available_seats > 0`. Also fetches stopover airports using `string_agg` ordered by `stop_order`.
+
+```sql
+SELECT * FROM public.search_flights('ICN', 'JFK', '2026-05-12', NULL);
+```
+
+#### `create_booking(p_customer_id, p_flight_id, p_seat_id, p_amount)`
+
+Atomic transaction — all three steps succeed or all roll back:
+1. **INSERT BOOKING** — `trg_validate_booking` fires here and blocks invalid requests
+2. **INSERT PAYMENT** — records the charge as `completed`
+3. **INSERT TICKET** — records ticket issuance timestamp
+
+A `unique_violation` on `booking_active_seat_unique` (seat already taken) is caught and rethrown as a human-readable exception.
+
+```sql
+SELECT public.create_booking(
+  'customer-uuid', 'flight-uuid', 'seat-uuid', 350.00
+);
+-- Returns: booking_id (uuid)
+```
+
+#### `cancel_booking(p_booking_id)`
+
+Atomic transaction:
+1. **DELETE TICKET** (must delete first due to FK)
+2. **UPDATE BOOKING** → `status = 'cancelled'`
+3. **UPDATE PAYMENT** → `status = 'refunded'`
+4. **INSERT REFUND** → `status = 'completed'`, `refunded_at = now()`
+
+Uses `FOR UPDATE` lock on the PAYMENT row to prevent race conditions.
+
+```sql
+SELECT public.cancel_booking('booking-uuid');
+-- Returns: "Booking <id> has been successfully cancelled and refunded."
+```
+
+#### `get_revenue_report()`
+
+Reads from `REVENUE_STATS_VIEW` and adds `class_revenue_pct`:
+
+```sql
+ROUND(100 * v.revenue / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_id, v.flight_date), 0), 2)
+```
+
+The window function partitions by flight so each class's revenue is shown as a percentage of that flight's total.
+
+---
+
+## Triggers
+
+### Trigger 1 — `trg_auto_generate_seats`
+
+**Fires:** `AFTER INSERT ON SEAT_CLASS` (once per row)  
+**Purpose:** Automatically populates `SEAT_INVENTORY` with physical seat rows when a seat class is created.
+
+Seat numbering layout:
+
+| Class | Start Row | Columns | Seats/Row |
+|---|---|---|---|
+| First | 1 | A, B | 2 |
+| Business | 10 | A, B, C, D | 4 |
+| Economy | 20 | A, B, C, D, E, F | 6 |
+
+Example: Economy with `seat_count = 6` generates `20A, 20B, 20C, 20D, 20E, 20F`.
+
+**Why this matters:** Staff never manually inserts seat rows. Adding a Seat Class is the sole entry point — the trigger ensures seat inventory always matches the declared count.
+
+### Trigger 2 — `trg_validate_booking`
+
+**Fires:** `BEFORE INSERT ON BOOKING` (once per row)  
+**Purpose:** Enforces two integrity constraints that cannot be expressed as simple FK constraints:
+
+1. **Flight must be in `'scheduled'` status** — prevents booking departed, arrived, or cancelled flights
+2. **Seat must belong to the same aircraft as the flight** — prevents a customer from booking a seat from a different aircraft
+
+If either check fails, the INSERT is aborted with a descriptive exception. No booking row is written.
+
+### Trigger 3 — `trg_guard_seat_class_update` + `trg_regenerate_seats_after_update`
+
+**Fires:** `BEFORE UPDATE` and `AFTER UPDATE ON SEAT_CLASS`  
+**Purpose:** Manages seat count changes safely.
+
+- If `seat_count` is unchanged → both triggers skip (no-op)
+- If `seat_count` changes **and active bookings exist** → `BEFORE` trigger raises exception, blocking the update
+- If `seat_count` changes **and no active bookings** → `BEFORE` trigger deletes all existing `SEAT_INVENTORY` rows, then `AFTER` trigger regenerates them with the new count
+
+This two-trigger pattern is necessary because you cannot both delete old rows and insert new ones in a single `BEFORE` trigger (the BEFORE trigger cannot observe its own side effects).
+
+---
+
+## Indexes
+
+Created in `01_schema.sql` for query optimization:
+
+| Index | Table | Columns | Optimizes |
+|---|---|---|---|
+| `idx_flight_date` | `FLIGHT` | `flight_date` | Date-based flight search |
+| `idx_flight_status` | `FLIGHT` | `status` | Filtering active/cancelled flights |
+| `idx_schedule_route` | `FLIGHT_SCHEDULE` | `depart_airport_iata, dest_airport_iata` | Route lookup |
+| `idx_schedule_valid` | `FLIGHT_SCHEDULE` | `valid_from, valid_until` | Schedule validity filtering |
+| `idx_booking_customer` | `BOOKING` | `customer_id` | Loading a customer's bookings |
+| `idx_booking_flight` | `BOOKING` | `flight_id` | Seat availability count per flight |
+| `idx_booking_status` | `BOOKING` | `status` | Filtering confirmed/cancelled |
+| `idx_seat_aircraft` | `SEAT_INVENTORY` | `aircraft_id` | Seat lookup by aircraft |
+| `idx_seat_class` | `SEAT_INVENTORY` | `class_id` | Seat lookup by class |
+| `idx_stopover_schedule` | `STOPOVER` | `schedule_id` | Stopover list for a route |
+
+The partial unique index `booking_active_seat_unique ON BOOKING (flight_id, seat_id) WHERE status != 'cancelled'` acts as both a constraint and an index, covering the most performance-critical booking query.

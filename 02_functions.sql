@@ -393,9 +393,9 @@ BEGIN
     INSERT INTO public."PAYMENT"(booking_id, amount, method, status)
     VALUES (v_booking_id, p_amount, 'credit_card', 'completed');
 
-    -- Step 3: Issue ticket
-    INSERT INTO public."TICKET"(booking_id, ticket_no)
-    VALUES (v_booking_id, 'TK-' || replace(v_booking_id::text, '-', ''));
+    -- Step 3: Issue ticket (ticket_no computed from booking_id in views/queries)
+    INSERT INTO public."TICKET"(booking_id)
+    VALUES (v_booking_id);
 
     RETURN v_booking_id;
 END;

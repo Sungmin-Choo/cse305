@@ -243,13 +243,12 @@ CREATE TABLE public."REFUND" (
 );
 
 -- TICKET
+-- ticket_no removed: computed on-the-fly as 'TK-' || replace(booking_id, '-', '')
 CREATE TABLE public."TICKET" (
   ticket_id   uuid        NOT NULL DEFAULT gen_random_uuid(),
   booking_id  uuid        NOT NULL,
-  ticket_no   varchar     NOT NULL,             -- Ticket number
   issued_at   timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT TICKET_pkey          PRIMARY KEY (ticket_id),
-  CONSTRAINT TICKET_no_key        UNIQUE (ticket_no),
   CONSTRAINT TICKET_booking_key   UNIQUE (booking_id),
   CONSTRAINT TICKET_booking_fkey  FOREIGN KEY (booking_id)
     REFERENCES public."BOOKING" (booking_id)
@@ -318,7 +317,7 @@ SELECT
   b.status,
   b.price,
   b.booked_at,
-  t.ticket_no
+  'TK-' || replace(b.booking_id::text, '-', '') AS ticket_no
 FROM       public."BOOKING"         b
 JOIN       public."CUSTOMER"        c  ON c.customer_id  = b.customer_id
 JOIN       public."FLIGHT"          f  ON f.flight_id    = b.flight_id
