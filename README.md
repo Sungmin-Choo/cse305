@@ -7,12 +7,12 @@ SUNY Korea — Term Project
 
 ## Team Members
 
-| Name | Role |
-|---|---|
-| Chloe Darosa | |
-| Sungmin Choo | |
-| Jaeheon Park | |
-| Jaehun Yoo   | |
+| Name |
+|---|
+| Chloe Darosa |
+| Sungmin Choo |
+| Jaeheon Park |
+| Jaehun Yoo   |
 
 ---
 
