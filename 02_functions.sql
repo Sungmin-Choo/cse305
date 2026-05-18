@@ -494,7 +494,7 @@ BEGIN
         v.revenue AS total_revenue,
         ROUND(
             100 * v.revenue
-            / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_id, v.flight_date), 0),
+            / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_number, v.flight_date), 0),
             2
         ) AS class_revenue_pct,
         v.load_factor_pct AS load_factor_percentage
