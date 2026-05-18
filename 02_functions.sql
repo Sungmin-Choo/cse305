@@ -425,10 +425,10 @@ BEGIN
 
     -- Lock and retrieve the associated payment (FOR UPDATE for concurrency)
     SELECT p.payment_id, p.amount
-      INTO v_payment_id, v_amount
+        INTO v_payment_id, v_amount
     FROM public."PAYMENT" p
     WHERE p.booking_id = p_booking_id
-      AND p.status = 'completed'
+        AND p.status = 'completed'
     FOR UPDATE;
 
     IF v_payment_id IS NULL THEN

@@ -287,6 +287,41 @@ def customer_portal():
         elif "my_bookings" in st.session_state:
             st.info("No active bookings found.")
 
+        st.divider()
+        st.subheader("Refund History")
+        if st.button("Load Refund History", key="btn_refunds"):
+            try:
+                cancelled = supabase.table("BOOKING").select("booking_id") \
+                    .eq("customer_id", user["id"]).eq("status", "cancelled").execute().data
+                booking_ids = [b["booking_id"] for b in cancelled]
+                if booking_ids:
+                    payments = supabase.table("PAYMENT").select("payment_id, booking_id") \
+                        .in_("booking_id", booking_ids).execute().data
+                    payment_ids = [p["payment_id"] for p in payments]
+                    if payment_ids:
+                        refunds = supabase.table("REFUND").select("*") \
+                            .in_("payment_id", payment_ids).execute().data
+                        st.session_state["my_refunds"] = refunds
+                    else:
+                        st.session_state["my_refunds"] = []
+                else:
+                    st.session_state["my_refunds"] = []
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+        if st.session_state.get("my_refunds"):
+            df_r = pd.DataFrame(st.session_state["my_refunds"])
+            if "refunded_at" in df_r.columns:
+                df_r["refunded_at"] = (
+                    pd.to_datetime(df_r["refunded_at"], utc=True)
+                    .dt.tz_convert("Asia/Seoul")
+                    .dt.strftime("%Y-%m-%d %H:%M:%S KST")
+                )
+            cols_r = ["refund_id", "payment_id", "amount", "status", "refunded_at"]
+            st.dataframe(df_r[[c for c in cols_r if c in df_r.columns]], use_container_width=True)
+        elif "my_refunds" in st.session_state:
+            st.info("No refund history found.")
+
 
 # ─────────────────────────────────────────────
 # STAFF DASHBOARD
