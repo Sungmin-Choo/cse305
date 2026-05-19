@@ -425,16 +425,40 @@ def staff_dashboard():
 
         # ── View Existing Schedules ──────────────
         with st.expander("View Existing Schedules"):
-            if st.button("Load Schedules", key="btn_vs"):
-                try:
-                    rows = supabase.table("FLIGHT_SCHEDULE") \
-                        .select("*").execute().data
-                    if rows:
-                        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-                    else:
-                        st.info("No schedules have been created.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+            try:
+                aircrafts = supabase.table("AIRCRAFT") \
+                    .select("aircraft_id, model, AIRLINE(name)").execute().data
+                airports  = supabase.table("AIRPORT").select("iata_code, city").execute().data
+            except Exception as e:
+                st.error(f"Failed to load master data: {e}")
+                aircrafts, airports = [], []
+
+            ac_opts = {
+                f"{a.get('AIRLINE',{}).get('name','?')} — {a['model']}": a["aircraft_id"]
+                for a in aircrafts
+            }
+            ap_opts = {f"{a['iata_code']} - {a['city']}": a["iata_code"] for a in airports}
+
+            if not ac_opts and ap_opts:
+                st.warning("Add aircraft and airports in Master Data first.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    dep_lbl = st.selectbox("Departure Airport", list(ap_opts.keys()), key="s_dep")
+                with c2:
+                    arr_lbl = st.selectbox("Arrival Airport",   list(ap_opts.keys()), key="s_arr")
+                if st.button("Load Schedules", key="btn_vs"):
+                    try:
+                        rows = supabase.table("FLIGHT_SCHEDULE").select("*") \
+                            .eq("depart_airport_iata", ap_opts[dep_lbl]) \
+                            .eq("dest_airport_iata", ap_opts[arr_lbl]) \
+                            .execute().data
+                        if rows:
+                            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                        else:
+                            st.info("No schedules matches with the given parameter.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
         # ── Create Flights ───────────────────────
         with st.expander("Generate Flights"):
