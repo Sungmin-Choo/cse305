@@ -462,7 +462,6 @@ def staff_dashboard():
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-
         # ── View Existing Flights ────────────────
         with st.expander("View Existing Flights"):
             c1, c2 = st.columns(2)
@@ -473,7 +472,7 @@ def staff_dashboard():
             if st.button("Load Flights", key="btn_vf"):
                 try:
                     rows = supabase.table("FLIGHT_AVAILABILITY_VIEW") \
-                        .select("flight_id,flight_number,airline_name,depart_airport_iata,dest_airport_iata,flight_date,depart_time,arrival_time,flight_status,class_name,available_seats") \
+                        .select("schedule_id, flight_id,flight_number,airline_name,depart_airport_iata,dest_airport_iata,flight_date,depart_time,arrival_time,flight_status,class_name,available_seats") \
                         .gte("flight_date", str(vf_from)) \
                         .lte("flight_date", str(vf_to)) \
                         .execute().data
