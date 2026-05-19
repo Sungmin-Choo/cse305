@@ -242,6 +242,7 @@ CREATE TRIGGER trg_validate_booking
 -- for a given date range. Uses the Schedule → Aircraft link.
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.generate_flights(
+    p_sched_id   uuid,
     p_start_date date,
     p_end_date   date
 )
@@ -277,6 +278,7 @@ BEGIN
     FROM public."FLIGHT_SCHEDULE" fs
     CROSS JOIN generate_series(p_start_date, p_end_date, interval '1 day') AS d(d_date)
     WHERE
+        fs.schedule_id = p_sched_id AND
         -- Only process dates within the schedule's validity range
         d.d_date::date BETWEEN fs.valid_from AND fs.valid_until
         -- Match operating days (supports Mon/Tue/... or 1/2/.../7 format)
