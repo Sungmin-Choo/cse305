@@ -144,113 +144,127 @@ def customer_portal():
     user = st.session_state["user"]
     st.title(f"Customer Portal — {user['name']}")
 
-    tab_search, tab_book, tab_mybookings = st.tabs([
-        "Search Flights", "Book Flight", "My Bookings"
+    tab_search, tab_mybookings = st.tabs([
+        "Search & Book Flights", "My Bookings"
     ])
 
-    # ── Tab 1: Search Flights ──────────────────
+    # ── Tab 1: Search & Book Flights ──────────────────
     with tab_search:
-        st.subheader("Search Available Flights")
-        c1, c2 = st.columns(2)
-        with c1:
-            dep = st.text_input("Departure Airport (IATA)", placeholder="e.g. ICN", key="s_dep").upper()
-        with c2:
-            arr = st.text_input("Arrival Airport (IATA)",   placeholder="e.g. JFK", key="s_arr").upper()
-        c3, c4 = st.columns(2)
-        with c3:
-            travel_date = st.date_input("Travel Date", value=date.today(), key="s_date")
-        with c4:
-            cls_filter = st.selectbox("Seat Class", ["All", "First", "Business", "Economy"], key="s_class")
 
-        if st.button("Search", key="btn_search"):
-            if not dep or not arr:
-                st.error("Both airports are required.")
-            else:
-                try:
-                    res = supabase.rpc("search_flights", {
-                        "p_dep_iata":    dep,
-                        "p_arr_iata":    arr,
-                        "p_travel_date": str(travel_date),
-                        "p_class_name":  None if cls_filter == "All" else cls_filter,
-                    }).execute()
-                    rows = res.data or []
-                    if not rows:
-                        st.info("No available flights found.")
-                    else:
-                        df = pd.DataFrame(rows)
-                        df["Route"] = df.apply(
-                            lambda r: build_route(dep, arr, r.get("stopover_list")), axis=1
-                        )
-                        df = df.rename(columns={
-                            "flight_id": "Flight ID", "flight_number": "Flight",
-                            "airline_name": "Airline", "depart_time": "Departure",
-                            "arrival_time": "Arrival", "class_name": "Class",
-                            "price": "Price (USD)", "available_seats": "Avail. Seats",
-                        })
-                        st.dataframe(
-                            df[["Flight ID","Flight","Airline","Route",
-                                "Departure","Arrival","Class","Price (USD)","Avail. Seats"]],
-                            use_container_width=True,
-                        )
-                        st.caption("Copy a Flight ID from the table above to use in the Book Flight tab.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    # ── Tab 2: Book Flight ─────────────────────
-    with tab_book:
-        st.subheader("Create a Booking")
-        flight_id = st.text_input("Flight ID (paste from search results)", key="b_fid").strip()
-        cls_choice = st.selectbox("Seat Class", ["Economy", "Business", "First"], key="b_cls")
-
-        avail_seats = []
-        base_price  = None
-
-        if flight_id:
+        # ── Option 1: Search Flights ──────────────────
+        with st.expander("Search Available Flights", expanded=True): 
             try:
-                fd = supabase.table("FLIGHT").select("aircraft_id") \
-                    .eq("flight_id", flight_id).limit(1).execute().data
-                if fd:
-                    ac_id = fd[0]["aircraft_id"]
-                    cd = supabase.table("SEAT_CLASS") \
-                        .select("class_id, price") \
-                        .eq("aircraft_id", ac_id) \
-                        .eq("class_name", cls_choice) \
-                        .limit(1).execute().data
-                    if cd:
-                        class_id   = cd[0]["class_id"]
-                        base_price = cd[0]["price"]
-                        all_seats  = supabase.table("SEAT_INVENTORY") \
-                            .select("seat_id, seat_number") \
-                            .eq("class_id", class_id).execute().data
-                        booked_ids = {
-                            b["seat_id"] for b in
-                            supabase.table("BOOKING").select("seat_id")
-                            .eq("flight_id", flight_id).eq("status", "confirmed")
-                            .execute().data
-                        }
-                        avail_seats = [s for s in all_seats if s["seat_id"] not in booked_ids]
+                airports  = supabase.table("AIRPORT").select("iata_code, city").execute().data
             except Exception as e:
-                st.warning(f"Could not load seats: {e}")
+                st.error(f"Failed to load master data: {e}")
+                airports = []
 
-        if avail_seats and base_price is not None:
-            opts = {s["seat_number"]: s["seat_id"] for s in avail_seats}
-            chosen_num = st.selectbox("Select Seat", list(opts.keys()), key="b_seat")
-            chosen_id  = opts[chosen_num]
-            st.info(f"Price: USD {base_price}")
+            ap_opts = {f"{a['iata_code']} - {a['city']}": a["iata_code"] for a in airports}
 
-            if st.button("Confirm Booking", key="btn_book"):
+            if not ap_opts:
+                st.warning("Critical Failure: Please contact Customer Support.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    dep_lbl = st.selectbox("Departure Airport", list(ap_opts.keys()), key="cust_dep")
+                with c2:
+                    arr_lbl = st.selectbox("Arrival Airport",   list(ap_opts.keys()), key="cust_arr")
+                c3, c4 = st.columns(2)
+                with c3:
+                    travel_date = st.date_input("Travel Date", value=date.today(), key="s_date")
+                with c4:
+                    cls_filter = st.selectbox("Seat Class", ["All", "First", "Business", "Economy"], key="s_class")
+
+                if st.button("Search", key="btn_search"):
+                    dep = ap_opts[dep_lbl]
+                    arr = ap_opts[arr_lbl]
+                    if not dep or not arr:
+                        st.error("Both airports are required.")
+                    else:
+                        try:
+                            res = supabase.rpc("search_flights", {
+                                "p_dep_iata":    dep,
+                                "p_arr_iata":    arr,
+                                "p_travel_date": str(travel_date),
+                                "p_class_name":  None if cls_filter == "All" else cls_filter,
+                            }).execute()
+                            rows = res.data or []
+                            if not rows:
+                                st.info("No available flights found.")
+                            else:
+                                df = pd.DataFrame(rows)
+                                df["Route"] = df.apply(
+                                    lambda r: build_route(dep, arr, r.get("stopover_list")), axis=1
+                                )
+                                df = df.rename(columns={
+                                    "flight_id": "Flight ID", "flight_number": "Flight",
+                                    "airline_name": "Airline", "depart_time": "Departure",
+                                    "arrival_time": "Arrival", "class_name": "Class",
+                                    "price": "Price (USD)", "available_seats": "Avail. Seats",
+                                })
+                                st.dataframe(
+                                    df[["Flight ID","Flight","Airline","Route",
+                                        "Departure","Arrival","Class","Price (USD)","Avail. Seats"]],
+                                    use_container_width=True,
+                                )
+                                st.caption("Copy a Flight ID from the table above to use in the Book Flight tab.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        # ── Option 2: Book Flight ─────────────────────
+        with st.expander("Create a Booking"):
+            flight_id = st.text_input("Flight ID (paste from search results)", key="b_fid").strip()
+            cls_choice = st.selectbox("Seat Class", ["Economy", "Business", "First"], key="b_cls")
+
+            avail_seats = []
+            base_price  = None
+
+            if flight_id:
                 try:
-                    res = supabase.rpc("create_booking", {
-                        "p_customer_id": user["id"],
-                        "p_flight_id":   flight_id,
-                        "p_seat_id":     chosen_id,
-                        "p_amount":      float(base_price),
-                    }).execute()
-                    st.success(f"Booking confirmed! Booking ID: `{res.data}`")
+                    fd = supabase.table("FLIGHT").select("aircraft_id") \
+                        .eq("flight_id", flight_id).limit(1).execute().data
+                    if fd:
+                        ac_id = fd[0]["aircraft_id"]
+                        cd = supabase.table("SEAT_CLASS") \
+                            .select("class_id, price") \
+                            .eq("aircraft_id", ac_id) \
+                            .eq("class_name", cls_choice) \
+                            .limit(1).execute().data
+                        if cd:
+                            class_id   = cd[0]["class_id"]
+                            base_price = cd[0]["price"]
+                            all_seats  = supabase.table("SEAT_INVENTORY") \
+                                .select("seat_id, seat_number") \
+                                .eq("class_id", class_id).execute().data
+                            booked_ids = {
+                                b["seat_id"] for b in
+                                supabase.table("BOOKING").select("seat_id")
+                                .eq("flight_id", flight_id).eq("status", "confirmed")
+                                .execute().data
+                            }
+                            avail_seats = [s for s in all_seats if s["seat_id"] not in booked_ids]
                 except Exception as e:
-                    st.error(f"Booking failed: {e}")
-        elif flight_id:
-            st.warning("No available seats for this flight and class.")
+                    st.warning(f"Could not load seats: {e}")
+
+            if avail_seats and base_price is not None:
+                opts = {s["seat_number"]: s["seat_id"] for s in avail_seats}
+                chosen_num = st.selectbox("Select Seat", list(opts.keys()), key="b_seat")
+                chosen_id  = opts[chosen_num]
+                st.info(f"Price: USD {base_price}")
+
+                if st.button("Confirm Booking", key="btn_book"):
+                    try:
+                        res = supabase.rpc("create_booking", {
+                            "p_customer_id": user["id"],
+                            "p_flight_id":   flight_id,
+                            "p_seat_id":     chosen_id,
+                            "p_amount":      float(base_price),
+                        }).execute()
+                        st.success(f"Booking confirmed! Booking ID: `{res.data}`")
+                    except Exception as e:
+                        st.error(f"Booking failed: {e}")
+            elif flight_id:
+                st.warning("No available seats for this flight and class.")
 
     # ── Tab 3: My Bookings ─────────────────────
     with tab_mybookings:
