@@ -340,8 +340,8 @@ def staff_dashboard():
     # ═══════════════════════════════════════════
     with tab_flights:
 
-        # ── Create Schedule + Generate Flights ──
-        with st.expander("Create Schedule & Generate Flights", expanded=True):
+        # ── Create Schedules ─────────────────────
+        with st.expander("Create Schedule"):
             try:
                 aircrafts = supabase.table("AIRCRAFT") \
                     .select("aircraft_id, model, AIRLINE(name)").execute().data
@@ -378,13 +378,8 @@ def staff_dashboard():
                     vf = st.date_input("Valid From",  value=date.today(), key="f_vf")
                 with c6:
                     vu = st.date_input("Valid Until", value=date.today(), key="f_vu")
-                c7, c8 = st.columns(2)
-                with c7:
-                    gs = st.date_input("Generate Start", value=date.today(), key="f_gs")
-                with c8:
-                    ge = st.date_input("Generate End",   value=date.today(), key="f_ge")
 
-                if st.button("Create Schedule & Generate Flights", key="btn_gen"):
+                if st.button("Create Schedule", key="btn_create"):
                     dep_iata = ap_opts[dep_lbl]
                     arr_iata = ap_opts[arr_lbl]
 
@@ -411,8 +406,6 @@ def staff_dashboard():
                         st.error("Flight number is required.")
                     elif vf > vu:
                         st.error("Valid From must be ≤ Valid Until.")
-                    elif gs > ge:
-                        st.error("Generate Start must be ≤ Generate End.")
                     else:
                         try:
                             supabase.table("FLIGHT_SCHEDULE").insert({
@@ -427,13 +420,48 @@ def staff_dashboard():
                                 "valid_until":         vu_str,
                             }).execute()
                             st.success("Schedule created.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        # ── View Existing Schedules ──────────────
+        with st.expander("View Existing Schedules"):
+            if st.button("Load Schedules", key="btn_vs"):
+                try:
+                    rows = supabase.table("FLIGHT_SCHEDULE") \
+                        .select("*").execute().data
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                    else:
+                        st.info("No schedules have been created.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        # ── Create Flights ───────────────────────
+        with st.expander("Generate Flights"):
+            schedule_id = st.text_input("Schedule ID (paste from results)", key="g_fid").strip()
+            c1, c2 = st.columns(2)
+            with c1:
+                gs = st.date_input("Generate Start", value=date.today(), key="f_gs")
+            with c2:
+                ge = st.date_input("Generate End",   value=date.today(), key="f_ge")
+            
+            if st.button("Generate Flights", key="btn_gen"):
+                if gs > ge:
+                    st.error("Generate Start must be ≤ Generate End.")
+                else:
+                    try:
+                        schedule = supabase.table("FLIGHT_SCHEDULE").select("*") \
+                            .eq("schedule_id", schedule_id).execute().data
+                        if schedule:
                             res = supabase.rpc("generate_flights", {
+                                "p_sched_id": schedule_id,
                                 "p_start_date": str(gs),
                                 "p_end_date":   str(ge),
                             }).execute()
                             st.success(str(res.data))
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
 
         # ── View Existing Flights ────────────────
         with st.expander("View Existing Flights"):
