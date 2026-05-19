@@ -141,7 +141,9 @@ CREATE TABLE public."FLIGHT_SCHEDULE" (
   CONSTRAINT FLIGHT_SCHEDULE_depart_fkey   FOREIGN KEY (depart_airport_iata)
     REFERENCES public."AIRPORT" (iata_code),
   CONSTRAINT FLIGHT_SCHEDULE_dest_fkey     FOREIGN KEY (dest_airport_iata)
-    REFERENCES public."AIRPORT" (iata_code)
+    REFERENCES public."AIRPORT" (iata_code),
+  -- Same schedule cannot be duplicated
+  CONSTRAINT FLIGHT_SCHEDULE_unique        UNIQUE (flight_number, depart_time, arrival_time, days_of_week, valid_from, valid_until)
 );
 
 -- STOPOVER (layover points for multi-leg routes)
