@@ -387,8 +387,24 @@ def staff_dashboard():
                 if st.button("Create Schedule & Generate Flights", key="btn_gen"):
                     dep_iata = ap_opts[dep_lbl]
                     arr_iata = ap_opts[arr_lbl]
+
+                    days_str = ",".join(days)
+                    dept_str = str(dep_t)
+                    arrt_str = str(arr_t)
+                    vf_str = str(vf)
+                    vu_str = str(vu)
+
+                    schedules = supabase.table("FLIGHT_SCHEDULE").select("*") \
+                        .eq("flight_number", fn) \
+                        .eq("depart_time", dept_str) \
+                        .eq("arrival_time", arrt_str) \
+                        .eq("days_of_week", days_str) \
+                        .eq("valid_from", vf_str) \
+                        .eq("valid_until", vu_str).execute()
                     if dep_iata == arr_iata:
                         st.error("Departure and arrival must differ.")
+                    elif len(schedules.data) != 0:
+                        st.error("Same schedule already exists.")
                     elif not days:
                         st.error("Select at least one operating day.")
                     elif not fn.strip():
@@ -404,11 +420,11 @@ def staff_dashboard():
                                 "depart_airport_iata": dep_iata,
                                 "dest_airport_iata":   arr_iata,
                                 "flight_number":       fn.strip(),
-                                "depart_time":         str(dep_t),
-                                "arrival_time":        str(arr_t),
-                                "days_of_week":        ",".join(days),
-                                "valid_from":          str(vf),
-                                "valid_until":         str(vu),
+                                "depart_time":         dept_str,
+                                "arrival_time":        arrt_str,
+                                "days_of_week":        days_str,
+                                "valid_from":          vf_str,
+                                "valid_until":         vu_str,
                             }).execute()
                             st.success("Schedule created.")
                             res = supabase.rpc("generate_flights", {
