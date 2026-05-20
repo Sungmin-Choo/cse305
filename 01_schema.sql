@@ -400,3 +400,23 @@ LEFT JOIN (
 ) booked ON booked.flight_id = f.flight_id
         AND booked.class_id  = sc.class_id
 WHERE f.status != 'cancelled';
+
+
+-- ============================================================
+-- STEP 4. CLEAN UP PT.2 (functions and triggers)
+-- ============================================================
+
+DROP FUNCTION IF EXISTS public.fn_auto_generate_seats();
+DROP TRIGGER IF EXISTS trg_auto_generate_seats ON public."SEAT_CLASS";
+DROP FUNCTION IF EXISTS public.fn_guard_seat_class_update();
+DROP TRIGGER IF EXISTS trg_guard_seat_class_update ON public."SEAT_CLASS";
+DROP FUNCTION IF EXISTS public.fn_regenerate_seats_after_update();
+DROP TRIGGER IF EXISTS trg_regenerate_seats_after_update ON public."SEAT_CLASS";
+DROP FUNCTION IF EXISTS public.fn_validate_booking();
+DROP TRIGGER IF EXISTS trg_validate_booking ON public."BOOKING";
+
+DROP FUNCTION IF EXISTS public.generate_flights(uuid, date, date);
+DROP FUNCTION IF EXISTS public.search_flights(varchar, varchar, date, varchar);
+DROP FUNCTION IF EXISTS public.create_booking(uuid, uuid, uuid, numeric);
+DROP FUNCTION IF EXISTS public.cancel_booking(uuid);
+DROP FUNCTION IF EXISTS public.get_revenue_report();
