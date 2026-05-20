@@ -343,7 +343,6 @@ SELECT
   DATE_TRUNC('month',   f.flight_date) AS revenue_month,
   DATE_TRUNC('quarter', f.flight_date) AS revenue_quarter,
   sc.class_name,
-  COUNT(b.booking_id)                  AS booking_count,
   COALESCE(SUM(p.amount), 0)          AS revenue,
   ROUND(
     COUNT(b.booking_id)::numeric / NULLIF(sc.seat_count, 0) * 100, 2
