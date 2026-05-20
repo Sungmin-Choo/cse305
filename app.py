@@ -207,7 +207,7 @@ def customer_portal():
                                         "Departure","Arrival","Class","Price (USD)","Avail. Seats"]],
                                     use_container_width=True,
                                 )
-                                st.caption("Copy a Flight ID from the table above to use in the Book Flight tab.")
+                                st.caption("Copy a Flight ID from the table above to use it on the next option.")
                         except Exception as e:
                             st.error(f"Error: {e}")
 
