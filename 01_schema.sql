@@ -332,7 +332,27 @@ LEFT JOIN  public."TICKET"          t  ON t.booking_id   = b.booking_id;
 
 -- Revenue Statistics View (for staff)
 -- Airline derived via: Flight → Aircraft → Airline
+--
+-- Two load-factor metrics are exposed so reports can distinguish:
+--   class_load_factor_pct  = confirmed bookings in this class / seats in this class * 100
+--   flight_load_factor_pct = confirmed bookings on this flight / total seats on aircraft * 100
+--                            (same value repeats across each class row of the same flight)
 CREATE OR REPLACE VIEW public."REVENUE_STATS_VIEW" AS
+WITH flight_totals AS (
+  SELECT
+    b.flight_id,
+    COUNT(*) AS total_bookings
+  FROM       public."BOOKING" b
+  WHERE b.status = 'confirmed'
+  GROUP BY b.flight_id
+),
+aircraft_totals AS (
+  SELECT
+    si.aircraft_id,
+    COUNT(*) AS total_seats
+  FROM       public."SEAT_INVENTORY" si
+  GROUP BY si.aircraft_id
+)
 SELECT
   f.flight_id,
   fs.flight_number,
@@ -343,10 +363,13 @@ SELECT
   DATE_TRUNC('month',   f.flight_date) AS revenue_month,
   DATE_TRUNC('quarter', f.flight_date) AS revenue_quarter,
   sc.class_name,
-  COALESCE(SUM(p.amount), 0)          AS revenue,
+  COALESCE(SUM(p.amount), 0)           AS revenue,
   ROUND(
     COUNT(b.booking_id)::numeric / NULLIF(sc.seat_count, 0) * 100, 2
-  )                                    AS load_factor_pct
+  )                                    AS class_load_factor_pct,
+  ROUND(
+    COALESCE(ft.total_bookings, 0)::numeric / NULLIF(at.total_seats, 0) * 100, 2
+  )                                    AS flight_load_factor_pct
 FROM       public."FLIGHT"          f
 JOIN       public."FLIGHT_SCHEDULE" fs ON fs.schedule_id = f.schedule_id
 JOIN       public."AIRCRAFT"        ac ON ac.aircraft_id = f.aircraft_id
@@ -357,14 +380,21 @@ JOIN       public."PAYMENT"         p  ON p.booking_id   = b.booking_id
                                       AND p.status = 'completed'
 JOIN       public."SEAT_INVENTORY"  si ON si.seat_id     = b.seat_id
 JOIN       public."SEAT_CLASS"      sc ON sc.class_id    = si.class_id
+LEFT JOIN  flight_totals            ft ON ft.flight_id   = f.flight_id
+LEFT JOIN  aircraft_totals          at ON at.aircraft_id = f.aircraft_id
 GROUP BY
   f.flight_id, fs.flight_number, al.name,
   fs.depart_airport_iata, fs.dest_airport_iata,
-  f.flight_date, sc.class_name, sc.seat_count;
+  f.flight_date, sc.class_name, sc.seat_count,
+  ft.total_bookings, at.total_seats;
 
 -- Flight Availability View (for search)
 -- Airline derived via: Flight → Aircraft → Airline
 -- Available seats = physical seats - confirmed bookings
+-- effective_price = base price * (1 - 0.15 * stop_count)
+--   → direct flights:    full price
+--   → 1-stop flights:    15% discount
+--   → 2-stop flights:    30% discount  (cap is enforced at 60% via GREATEST)
 CREATE OR REPLACE VIEW public."FLIGHT_AVAILABILITY_VIEW" AS
 SELECT
   f.flight_id,
@@ -379,6 +409,8 @@ SELECT
   al.name         AS airline_name,
   sc.class_name,
   sc.price,
+  COALESCE(stops.cnt, 0)::int                                                    AS stop_count,
+  ROUND(sc.price * GREATEST(1 - 0.15 * COALESCE(stops.cnt, 0), 0.40), 2)         AS effective_price,
   sc.seat_count   AS total_seats_in_class,
   sc.seat_count - COALESCE(booked.cnt, 0) AS available_seats
 FROM       public."FLIGHT"          f
@@ -398,6 +430,12 @@ LEFT JOIN (
   GROUP BY b.flight_id, si.class_id
 ) booked ON booked.flight_id = f.flight_id
         AND booked.class_id  = sc.class_id
+LEFT JOIN (
+  -- Number of stopovers per schedule (drives the discount factor)
+  SELECT schedule_id, COUNT(*) AS cnt
+  FROM public."STOPOVER"
+  GROUP BY schedule_id
+) stops ON stops.schedule_id = f.schedule_id
 WHERE f.status != 'cancelled';
 
 
@@ -419,3 +457,6 @@ DROP FUNCTION IF EXISTS public.search_flights(varchar, varchar, date, varchar);
 DROP FUNCTION IF EXISTS public.create_booking(uuid, uuid, uuid, numeric);
 DROP FUNCTION IF EXISTS public.cancel_booking(uuid);
 DROP FUNCTION IF EXISTS public.get_revenue_report();
+DROP FUNCTION IF EXISTS public.bulk_generate_test_bookings(int, int);
+DROP FUNCTION IF EXISTS public.explain_search_flights(varchar, varchar, date, varchar);
+DROP FUNCTION IF EXISTS public.explain_revenue_report();

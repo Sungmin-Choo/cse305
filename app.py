@@ -77,7 +77,11 @@ def render_sidebar():
                         st.rerun()
                     else:
                         st.error("Invalid email or password.")
-                st.caption("Demo accounts (password: **1234**)  \nalice@example.com  \nbob@example.com  \nadmin@airbooking.local")
+                st.caption(
+                    "Demo accounts (password: **1234**)  \n"
+                    "alice@example.com  \nbob@example.com  \ncharlie@example.com  \n"
+                    "admin@airbooking.local"
+                )
 
             with tab_reg:
                 r_name     = st.text_input("Full Name",  key="reg_name")
@@ -116,6 +120,7 @@ def show_welcome():
         "**Demo accounts** (password: `1234`)\n\n"
         "- Customer: `alice@example.com`\n"
         "- Customer: `bob@example.com`\n"
+        "- Customer: `charlie@example.com`\n"
         "- Staff:    `admin@airbooking.local`"
     )
 
@@ -129,6 +134,15 @@ def build_route(dep, dest, stopover_list):
         stops = stopover_list.split(",")
         return " → ".join([dep] + stops + [dest])
     return f"{dep} → {dest}"
+
+
+def _format_plan(data):
+    """Convert PostgREST SETOF text response into one newline-joined block.
+    PostgREST may return either a list[str] or list[{<func_name>: str}]."""
+    rows = data or []
+    if rows and isinstance(rows[0], dict):
+        rows = [next(iter(r.values()), "") for r in rows]
+    return "\n".join(str(x) for x in rows)
 
 
 def fmt_cols(df, rename_map, keep):
@@ -152,9 +166,9 @@ def customer_portal():
     with tab_search:
 
         # ── Option 1: Search Flights ──────────────────
-        with st.expander("Search Available Flights", expanded=True): 
+        with st.expander("Search Available Flights", expanded=True):
             try:
-                airports  = supabase.table("AIRPORT").select("iata_code, city").execute().data
+                airports = supabase.table("AIRPORT").select("iata_code, city").execute().data
             except Exception as e:
                 st.error(f"Failed to load master data: {e}")
                 airports = []
@@ -168,7 +182,7 @@ def customer_portal():
                 with c1:
                     dep_lbl = st.selectbox("Departure Airport", list(ap_opts.keys()), key="cust_dep")
                 with c2:
-                    arr_lbl = st.selectbox("Arrival Airport",   list(ap_opts.keys()), key="cust_arr")
+                    arr_lbl = st.selectbox("Arrival Airport", list(ap_opts.keys()), key="cust_arr")
                 c3, c4 = st.columns(2)
                 with c3:
                     travel_date = st.date_input("Travel Date", value=date.today(), key="s_date")
@@ -178,8 +192,8 @@ def customer_portal():
                 if st.button("Search", key="btn_search"):
                     dep = ap_opts[dep_lbl]
                     arr = ap_opts[arr_lbl]
-                    if not dep or not arr:
-                        st.error("Both airports are required.")
+                    if dep == arr:
+                        st.error("Departure and arrival airports must differ.")
                     else:
                         try:
                             res = supabase.rpc("search_flights", {
@@ -189,51 +203,98 @@ def customer_portal():
                                 "p_class_name":  None if cls_filter == "All" else cls_filter,
                             }).execute()
                             rows = res.data or []
-                            if not rows:
-                                st.info("No available flights found.")
-                            else:
-                                df = pd.DataFrame(rows)
-                                df["Route"] = df.apply(
-                                    lambda r: build_route(dep, arr, r.get("stopover_list")), axis=1
-                                )
-                                df = df.rename(columns={
-                                    "flight_id": "Flight ID", "flight_number": "Flight",
-                                    "airline_name": "Airline", "depart_time": "Departure",
-                                    "arrival_time": "Arrival", "class_name": "Class",
-                                    "price": "Price (USD)", "available_seats": "Avail. Seats",
-                                })
-                                st.dataframe(
-                                    df[["Flight ID","Flight","Airline","Route",
-                                        "Departure","Arrival","Class","Price (USD)","Avail. Seats"]],
-                                    use_container_width=True,
-                                )
-                                st.caption("Copy a Flight ID from the table above to use it on the next option.")
+                            st.session_state["search_results"] = rows
+                            st.session_state["search_dep"] = dep
+                            st.session_state["search_arr"] = arr
                         except Exception as e:
                             st.error(f"Error: {e}")
+                            st.session_state["search_results"] = []
+
+                rows = st.session_state.get("search_results")
+                if rows is not None:
+                    if not rows:
+                        st.info("No available flights found. Try a different date or route.")
+                    else:
+                        dep = st.session_state.get("search_dep")
+                        arr = st.session_state.get("search_arr")
+                        df = pd.DataFrame(rows)
+                        df["Route"] = df.apply(
+                            lambda r: build_route(dep, arr, r.get("stopover_list")), axis=1
+                        )
+                        df["Departure"] = pd.to_datetime(df["depart_time"]).dt.strftime("%Y-%m-%d %H:%M")
+                        df["Arrival"]   = pd.to_datetime(df["arrival_time"]).dt.strftime("%Y-%m-%d %H:%M")
+                        df["Stops"]     = df["stop_count"].astype(int)
+                        df_disp = df.rename(columns={
+                            "flight_number":   "Flight",
+                            "airline_name":    "Airline",
+                            "class_name":      "Class",
+                            "price":           "Base Price",
+                            "effective_price": "Price (USD)",
+                            "available_seats": "Avail. Seats",
+                        })[["Flight", "Airline", "Route", "Departure", "Arrival",
+                            "Class", "Stops", "Base Price", "Price (USD)", "Avail. Seats"]]
+                        st.dataframe(df_disp, use_container_width=True, hide_index=True)
+                        st.caption(
+                            "Stopover routes receive a 15% discount per stop. "
+                            "Pick one from the dropdown below to book it directly."
+                        )
 
         # ── Option 2: Book Flight ─────────────────────
-        with st.expander("Create a Booking"):
-            flight_id = st.text_input("Flight ID (paste from search results)", key="b_fid").strip()
-            cls_choice = st.selectbox("Seat Class", ["Economy", "Business", "First"], key="b_cls")
+        with st.expander("Create a Booking", expanded=True):
+            results = st.session_state.get("search_results") or []
+            if not results:
+                st.info("Search for flights first — your results will appear here for direct booking.")
+            else:
+                dep = st.session_state.get("search_dep")
+                arr = st.session_state.get("search_arr")
 
-            avail_seats = []
-            base_price  = None
+                def _row_label(r):
+                    route   = build_route(dep, arr, r.get("stopover_list"))
+                    dep_dt  = pd.to_datetime(r["depart_time"]).strftime("%Y-%m-%d %H:%M")
+                    stops   = int(r["stop_count"])
+                    stop_lbl = f" • {stops} stop{'s' if stops != 1 else ''}" if stops > 0 else " • direct"
+                    return (f"{r['flight_number']} — {route} — {dep_dt} — "
+                            f"{r['class_name']} — ${float(r['effective_price']):.2f}{stop_lbl}")
 
-            if flight_id:
+                # Use the row index in session-state results as the selectbox value
+                row_indices = list(range(len(results)))
+                sel_idx = st.selectbox(
+                    "Select a flight to book",
+                    row_indices,
+                    format_func=lambda i: _row_label(results[i]),
+                    key="b_row_idx",
+                )
+                chosen = results[sel_idx]
+                flight_id  = chosen["flight_id"]
+                cls_choice = chosen["class_name"]
+                eff_price  = float(chosen["effective_price"])
+                base_price = float(chosen["price"])
+
+                # Show a summary card
+                cols = st.columns(3)
+                cols[0].metric("Class", cls_choice)
+                cols[1].metric("Stops", int(chosen["stop_count"]))
+                if int(chosen["stop_count"]) > 0:
+                    cols[2].metric("Price (USD)", f"${eff_price:.2f}",
+                                   delta=f"-${base_price - eff_price:.2f} vs direct")
+                else:
+                    cols[2].metric("Price (USD)", f"${eff_price:.2f}")
+
+                # Load available seats for this flight + class
+                avail_seats = []
                 try:
                     fd = supabase.table("FLIGHT").select("aircraft_id") \
                         .eq("flight_id", flight_id).limit(1).execute().data
                     if fd:
                         ac_id = fd[0]["aircraft_id"]
                         cd = supabase.table("SEAT_CLASS") \
-                            .select("class_id, price") \
+                            .select("class_id") \
                             .eq("aircraft_id", ac_id) \
                             .eq("class_name", cls_choice) \
                             .limit(1).execute().data
                         if cd:
-                            class_id   = cd[0]["class_id"]
-                            base_price = cd[0]["price"]
-                            all_seats  = supabase.table("SEAT_INVENTORY") \
+                            class_id = cd[0]["class_id"]
+                            all_seats = supabase.table("SEAT_INVENTORY") \
                                 .select("seat_id, seat_number") \
                                 .eq("class_id", class_id).execute().data
                             booked_ids = {
@@ -246,27 +307,31 @@ def customer_portal():
                 except Exception as e:
                     st.warning(f"Could not load seats: {e}")
 
-            if avail_seats and base_price is not None:
-                opts = {s["seat_number"]: s["seat_id"] for s in avail_seats}
-                chosen_num = st.selectbox("Select Seat", list(opts.keys()), key="b_seat")
-                chosen_id  = opts[chosen_num]
-                st.info(f"Price: USD {base_price}")
+                if avail_seats:
+                    seat_opts = {s["seat_number"]: s["seat_id"] for s in avail_seats}
+                    chosen_num = st.selectbox("Select Seat", list(seat_opts.keys()), key="b_seat")
+                    chosen_id  = seat_opts[chosen_num]
 
-                if st.button("Confirm Booking", key="btn_book"):
-                    try:
-                        res = supabase.rpc("create_booking", {
-                            "p_customer_id": user["id"],
-                            "p_flight_id":   flight_id,
-                            "p_seat_id":     chosen_id,
-                            "p_amount":      float(base_price),
-                        }).execute()
-                        st.success(f"Booking confirmed! Booking ID: `{res.data}`")
-                    except Exception as e:
-                        st.error(f"Booking failed: {e}")
-            elif flight_id:
-                st.warning("No available seats for this flight and class.")
+                    if st.button("Confirm Booking", key="btn_book", type="primary"):
+                        try:
+                            res = supabase.rpc("create_booking", {
+                                "p_customer_id": user["id"],
+                                "p_flight_id":   flight_id,
+                                "p_seat_id":     chosen_id,
+                                "p_amount":      eff_price,
+                            }).execute()
+                            st.success(
+                                f"Booking confirmed for {chosen['flight_number']} — "
+                                f"seat {chosen_num} — ${eff_price:.2f}."
+                            )
+                            # Refresh availability for further selections
+                            st.session_state.pop("my_bookings", None)
+                        except Exception as e:
+                            st.error(f"Booking failed: {e}")
+                else:
+                    st.warning("No available seats in this class for the selected flight.")
 
-    # ── Tab 3: My Bookings ─────────────────────
+    # ── Tab 2: My Bookings ─────────────────────
     with tab_mybookings:
         st.subheader("My Bookings")
         if st.button("Load My Bookings", key="btn_load"):
@@ -283,13 +348,30 @@ def customer_portal():
         if st.session_state.get("my_bookings"):
             bks = st.session_state["my_bookings"]
             df = pd.DataFrame(bks)
-            cols = ["booking_id","flight_number","airline_name","flight_date",
-                    "depart_airport_iata","dest_airport_iata","seat_number",
-                    "class_name","price","ticket_no"]
-            st.dataframe(df[[c for c in cols if c in df.columns]], use_container_width=True)
+            cols = ["flight_number", "airline_name", "flight_date",
+                    "depart_airport_iata", "dest_airport_iata", "seat_number",
+                    "class_name", "price", "ticket_no"]
+            st.dataframe(
+                df[[c for c in cols if c in df.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
-            sel = st.selectbox("Select booking to cancel",
-                               [b["booking_id"] for b in bks], key="b_cancel_sel")
+            # Build descriptive labels: "KE001 — ICN→JFK — 2026-05-15 — Seat 1A — $1500.00"
+            def _bk_label(b):
+                return (f"{b.get('flight_number','?')} — "
+                        f"{b.get('depart_airport_iata','?')}→{b.get('dest_airport_iata','?')} — "
+                        f"{b.get('flight_date','?')} — "
+                        f"Seat {b.get('seat_number','?')} — "
+                        f"${float(b.get('price', 0)):.2f}")
+
+            id_by_label = {_bk_label(b): b["booking_id"] for b in bks}
+            sel_lbl = st.selectbox(
+                "Select a booking to cancel",
+                list(id_by_label.keys()),
+                key="b_cancel_sel",
+            )
+            sel = id_by_label[sel_lbl]
             if st.button("Cancel Booking", key="btn_cancel"):
                 try:
                     res = supabase.rpc("cancel_booking", {"p_booking_id": sel}).execute()
@@ -346,7 +428,7 @@ def staff_dashboard():
     st.title(f"Staff Dashboard — {user['name']}")
 
     tab_flights, tab_master, tab_revenue, tab_adv = st.tabs([
-        "Flights", "Master Data", "Revenue Statistics", "Triggers Demo"
+        "Flights", "Master Data", "Revenue Statistics", "Advanced Features"
     ])
 
     # ═══════════════════════════════════════════
@@ -476,29 +558,45 @@ def staff_dashboard():
 
         # ── Create Flights ───────────────────────
         with st.expander("Generate Flights"):
-            schedule_id = st.text_input("Schedule ID (paste from results)", key="g_fid").strip()
-            c1, c2 = st.columns(2)
-            with c1:
-                gs = st.date_input("Generate Start", value=date.today(), key="f_gs")
-            with c2:
-                ge = st.date_input("Generate End",   value=date.today(), key="f_ge")
-            
-            if st.button("Generate Flights", key="btn_gen"):
-                if gs > ge:
-                    st.error("Generate Start must be ≤ Generate End.")
-                else:
-                    try:
-                        schedule = supabase.table("FLIGHT_SCHEDULE").select("*") \
-                            .eq("schedule_id", schedule_id).execute().data
-                        if schedule:
+            try:
+                all_schedules = supabase.table("FLIGHT_SCHEDULE") \
+                    .select("schedule_id, flight_number, depart_airport_iata, "
+                            "dest_airport_iata, days_of_week, valid_from, valid_until") \
+                    .execute().data
+            except Exception as e:
+                st.error(f"Failed to load schedules: {e}")
+                all_schedules = []
+
+            if not all_schedules:
+                st.info("No schedules exist yet. Create one above first.")
+            else:
+                sched_opts = {
+                    (f"{s['flight_number']} — {s['depart_airport_iata']}→{s['dest_airport_iata']}"
+                     f" — {s['days_of_week']} — valid {s['valid_from']}…{s['valid_until']}"): s["schedule_id"]
+                    for s in all_schedules
+                }
+                sched_lbl = st.selectbox("Schedule", list(sched_opts.keys()), key="g_sched")
+                schedule_id = sched_opts[sched_lbl]
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    gs = st.date_input("Generate Start", value=date.today(), key="f_gs")
+                with c2:
+                    ge = st.date_input("Generate End",   value=date.today(), key="f_ge")
+
+                if st.button("Generate Flights", key="btn_gen"):
+                    if gs > ge:
+                        st.error("Generate Start must be ≤ Generate End.")
+                    else:
+                        try:
                             res = supabase.rpc("generate_flights", {
-                                "p_sched_id": schedule_id,
+                                "p_sched_id":   schedule_id,
                                 "p_start_date": str(gs),
                                 "p_end_date":   str(ge),
                             }).execute()
                             st.success(str(res.data))
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
         # ── View Existing Flights ────────────────
         with st.expander("View Existing Flights"):
@@ -752,44 +850,89 @@ def staff_dashboard():
             try:
                 res  = supabase.rpc("get_revenue_report", {}).execute()
                 rows = res.data or []
-                if not rows:
-                    st.info("No revenue data available. Create some bookings first.")
-                else:
-                    df = pd.DataFrame(rows)
-                    df["revenue_month"]   = pd.to_datetime(df["revenue_month"]).dt.strftime("%Y-%m")
-                    df["revenue_quarter"] = pd.to_datetime(df["revenue_quarter"]).dt.to_period("Q").astype(str)
-
-                    st.write("**Revenue by Flight and Class**")
-                    disp_cols = ["flight_number","airline_name","route","flight_date",
-                                 "class_name","total_revenue","class_revenue_pct","load_factor_percentage"]
-                    st.dataframe(df[[c for c in disp_cols if c in df.columns]], use_container_width=True)
-
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.write("**Revenue by Month**")
-                        monthly = df.groupby("revenue_month")["total_revenue"].sum().reset_index()
-                        st.bar_chart(monthly.set_index("revenue_month"))
-                    with c2:
-                        st.write("**Revenue by Route**")
-                        route_rev = df.groupby("route")["total_revenue"].sum() \
-                            .sort_values(ascending=False).reset_index()
-                        st.bar_chart(route_rev.set_index("route"))
-
-                    st.write("**Revenue by Seat Class**")
-                    class_rev = df.groupby("class_name")["total_revenue"].sum().reset_index()
-                    st.bar_chart(class_rev.set_index("class_name"))
+                st.session_state["revenue_rows"] = rows
             except Exception as e:
                 st.error(f"Error: {e}")
+                st.session_state["revenue_rows"] = []
+
+        rows = st.session_state.get("revenue_rows")
+        if rows is None:
+            st.caption("Click the button to load the latest revenue report.")
+        elif not rows:
+            st.info("No revenue data available. Create some bookings first.")
+        else:
+            df = pd.DataFrame(rows)
+            df["revenue_month"]   = pd.to_datetime(df["revenue_month"]).dt.strftime("%Y-%m")
+            # Q labels like "2026-Q2" derived directly from month number — robust across pandas versions
+            df["revenue_quarter"] = pd.to_datetime(df["revenue_quarter"]).apply(
+                lambda d: f"{d.year}-Q{((d.month - 1) // 3) + 1}"
+            )
+
+            # ── Totals strip ────────────────────────────
+            total_revenue  = float(df["total_revenue"].sum())
+            unique_flights = int(df["flight_id"].nunique())
+            unique_routes  = int(df["route"].nunique())
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Revenue (USD)", f"${total_revenue:,.2f}")
+            m2.metric("Flights with Bookings", f"{unique_flights}")
+            m3.metric("Routes Sold",            f"{unique_routes}")
+
+            # ── Per-flight per-class breakdown ──────────
+            st.write("**Revenue by Flight and Class**")
+            disp_cols = [
+                "flight_number", "airline_name", "route", "flight_date",
+                "class_name", "total_revenue", "class_revenue_pct",
+                "class_load_factor_pct", "flight_load_factor_pct",
+            ]
+            st.dataframe(
+                df[[c for c in disp_cols if c in df.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "`class_revenue_pct` is the share of a flight's revenue from this class. "
+                "`class_load_factor_pct` = bookings in this class / seats in this class. "
+                "`flight_load_factor_pct` = bookings on this flight / total seats on the aircraft."
+            )
+
+            # ── Time-period roll-ups ────────────────────
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Revenue by Month**")
+                monthly = df.groupby("revenue_month")["total_revenue"].sum().reset_index()
+                st.bar_chart(monthly.set_index("revenue_month"))
+            with c2:
+                st.write("**Revenue by Quarter**")
+                quarterly = df.groupby("revenue_quarter")["total_revenue"].sum().reset_index()
+                st.bar_chart(quarterly.set_index("revenue_quarter"))
+
+            # ── Route ranking & class breakdown ─────────
+            st.write("**Revenue ranked by Route**")
+            route_rev = (
+                df.groupby("route")["total_revenue"].sum()
+                  .sort_values(ascending=False).reset_index()
+            )
+            st.bar_chart(route_rev.set_index("route"))
+
+            st.write("**Revenue by Seat Class**")
+            class_rev = df.groupby("class_name")["total_revenue"].sum().reset_index()
+            class_rev["share_pct"] = (class_rev["total_revenue"] /
+                                     class_rev["total_revenue"].sum() * 100).round(2)
+            st.dataframe(class_rev, use_container_width=True, hide_index=True)
+            st.bar_chart(class_rev.set_index("class_name")["total_revenue"])
 
     # ═══════════════════════════════════════════
-    # TAB 4: Triggers Demo
+    # TAB 4: Advanced Features
     # ═══════════════════════════════════════════
     with tab_adv:
-        st.subheader("Advanced Feature: Triggers & Stored Procedures")
+        st.subheader("Advanced Features")
         st.write(
-            "This project implements **3 database triggers** and **5 stored procedures** "
-            "as PL/pgSQL functions in PostgreSQL. The demos below show each trigger firing live."
+            "This project incorporates **both** advanced features from the project brief:\n\n"
+            "1. **Triggers & Stored Procedures** — 3 PL/pgSQL triggers and 5+ stored procedures.\n"
+            "2. **Indexing & Query Optimization** — bulk data generator + EXPLAIN ANALYZE plans."
         )
+
+        st.markdown("### Triggers & Stored Procedures")
 
         # ── Demo 1: Auto-generate Seat Inventory ──
         with st.expander("Demo 1 — trg_auto_generate_seats (Auto-generate Seat Inventory)", expanded=True):
@@ -1022,11 +1165,130 @@ END; $$;""", language="sql")
 | Procedure | Description |
 |---|---|
 | `generate_flights(start, end)` | Generates individual `FLIGHT` rows from all recurring `FLIGHT_SCHEDULE` records for the given date range. Skips already-generated dates. |
-| `search_flights(dep, arr, date, class)` | Returns available flights with seat counts from `FLIGHT_AVAILABILITY_VIEW`. Includes stopover list via `string_agg`. |
+| `search_flights(dep, arr, date, class)` | Returns available flights with seat counts and stopover-discounted `effective_price`. Includes stopover list via `string_agg`. |
 | `create_booking(customer, flight, seat, amount)` | **Atomic**: INSERT BOOKING → INSERT PAYMENT → INSERT TICKET. Rolls back all on any failure. |
 | `cancel_booking(booking_id)` | **Atomic**: DELETE TICKET → UPDATE BOOKING status='cancelled' → UPDATE PAYMENT status='refunded' → INSERT REFUND. |
-| `get_revenue_report()` | Aggregates revenue, class breakdown %, and load factor % from `REVENUE_STATS_VIEW`. |
+| `get_revenue_report()` | Aggregates revenue, class breakdown %, and per-flight + per-class load factors from `REVENUE_STATS_VIEW`. |
+| `bulk_generate_test_bookings(N, seed)` | Loads N random confirmed bookings (with payment + ticket) for query-optimization testing. |
 """)
+
+        # ───────────────────────────────────────────
+        # Indexing & Query Optimization
+        # ───────────────────────────────────────────
+        st.divider()
+        st.markdown("### Indexing & Query Optimization")
+        st.write(
+            "PostgreSQL's planner exposes `EXPLAIN (ANALYZE, BUFFERS)` to "
+            "inspect execution plans and timings. Below: scale the dataset "
+            "with the bulk generator, then run each core query through "
+            "EXPLAIN ANALYZE to verify index usage."
+        )
+
+        # ── Indexes catalog ────────────────────────
+        with st.expander("Indexes defined in 01_schema.sql"):
+            st.markdown("""
+| Index | Table | Columns | Optimizes |
+|---|---|---|---|
+| `idx_flight_date` | `FLIGHT` | `flight_date` | Date-based flight search |
+| `idx_flight_status` | `FLIGHT` | `status` | Filter active/cancelled flights |
+| `idx_schedule_route` | `FLIGHT_SCHEDULE` | `(depart_airport_iata, dest_airport_iata)` | Route lookup |
+| `idx_schedule_valid` | `FLIGHT_SCHEDULE` | `(valid_from, valid_until)` | Validity filter |
+| `idx_booking_customer` | `BOOKING` | `customer_id` | My-Bookings page |
+| `idx_booking_flight` | `BOOKING` | `flight_id` | Seat availability count |
+| `idx_booking_status` | `BOOKING` | `status` | Confirmed/cancelled filter |
+| `idx_seat_aircraft` | `SEAT_INVENTORY` | `aircraft_id` | Seat lookup per aircraft |
+| `idx_seat_class` | `SEAT_INVENTORY` | `class_id` | Seat lookup per class |
+| `idx_stopover_schedule` | `STOPOVER` | `schedule_id` | Stopover list lookup |
+| `booking_active_seat_unique` | `BOOKING` | `(flight_id, seat_id) WHERE status != 'cancelled'` | Double-booking guard + lookup |
+""")
+
+        # ── Bulk Data Generator ────────────────────
+        with st.expander("Bulk Generate Test Bookings (scale the dataset)"):
+            st.markdown(
+                "Calls `bulk_generate_test_bookings(N, seed)` which atomically "
+                "inserts N random confirmed bookings (each with PAYMENT and TICKET). "
+                "Generate flights first via the Flights tab so there are seats to book."
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                bulk_n = st.number_input("Number of bookings to create",
+                                         min_value=1, max_value=50000, value=2000, key="bulk_n")
+            with c2:
+                bulk_seed = st.number_input("Random seed (reproducible)",
+                                            min_value=0, max_value=999999, value=42, key="bulk_seed")
+            if st.button("Run Bulk Generator", key="btn_bulk"):
+                try:
+                    res = supabase.rpc("bulk_generate_test_bookings", {
+                        "p_count": int(bulk_n),
+                        "p_seed":  int(bulk_seed),
+                    }).execute()
+                    st.success(str(res.data))
+                except Exception as e:
+                    st.error(f"Bulk generator error: {e}")
+
+            # Show current scale
+            try:
+                f_cnt = supabase.table("FLIGHT").select("flight_id", count="exact").execute()
+                b_cnt = supabase.table("BOOKING").select("booking_id", count="exact").execute()
+                si_cnt = supabase.table("SEAT_INVENTORY").select("seat_id", count="exact").execute()
+                m1, m2, m3 = st.columns(3)
+                m1.metric("FLIGHT rows", f"{getattr(f_cnt, 'count', 0):,}")
+                m2.metric("BOOKING rows", f"{getattr(b_cnt, 'count', 0):,}")
+                m3.metric("SEAT_INVENTORY rows", f"{getattr(si_cnt, 'count', 0):,}")
+            except Exception:
+                pass
+
+        # ── EXPLAIN ANALYZE — search_flights ──────
+        with st.expander("EXPLAIN ANALYZE — search_flights"):
+            st.markdown(
+                "Inspect the executor plan and per-node timings for the customer "
+                "Flight Search query path."
+            )
+            try:
+                airports = supabase.table("AIRPORT").select("iata_code, city").execute().data
+            except Exception:
+                airports = []
+            ap_opts2 = {f"{a['iata_code']} - {a['city']}": a["iata_code"] for a in airports}
+
+            if ap_opts2:
+                c1, c2 = st.columns(2)
+                with c1:
+                    e_dep = st.selectbox("Departure", list(ap_opts2.keys()), key="e_dep")
+                with c2:
+                    e_arr = st.selectbox("Arrival",   list(ap_opts2.keys()), key="e_arr")
+                c3, c4 = st.columns(2)
+                with c3:
+                    e_date = st.date_input("Travel Date", value=date.today(), key="e_date")
+                with c4:
+                    e_cls = st.selectbox("Seat Class",
+                                          ["All", "First", "Business", "Economy"], key="e_cls")
+                if st.button("Run EXPLAIN ANALYZE", key="btn_e_sf"):
+                    try:
+                        res = supabase.rpc("explain_search_flights", {
+                            "p_dep_iata":    ap_opts2[e_dep],
+                            "p_arr_iata":    ap_opts2[e_arr],
+                            "p_travel_date": str(e_date),
+                            "p_class_name":  None if e_cls == "All" else e_cls,
+                        }).execute()
+                        plan = _format_plan(res.data)
+                        st.code(plan or "(no plan returned)", language="text")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        # ── EXPLAIN ANALYZE — get_revenue_report ──
+        with st.expander("EXPLAIN ANALYZE — get_revenue_report"):
+            st.markdown(
+                "Inspect the executor plan and per-node timings for the Revenue Statistics "
+                "aggregation. After bulk-generating a few thousand bookings, look for "
+                "sequential scans on `BOOKING` / `PAYMENT` that benefit from existing indexes."
+            )
+            if st.button("Run EXPLAIN ANALYZE", key="btn_e_rev"):
+                try:
+                    res = supabase.rpc("explain_revenue_report", {}).execute()
+                    plan = _format_plan(res.data)
+                    st.code(plan or "(no plan returned)", language="text")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
 
 # ─────────────────────────────────────────────

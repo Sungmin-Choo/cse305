@@ -309,7 +309,12 @@ $$;
 -- ============================================================
 -- Searches available flights by departure/arrival airport,
 -- travel date, and optional seat class.
--- Returns stopover_list (comma-separated airport codes) via string_agg.
+-- Returns:
+--   stopover_list  — comma-separated airport codes via string_agg
+--   stop_count     — number of stopovers (0 = direct)
+--   effective_price — base price discounted 15% per stopover
+-- Results are ordered by effective_price ascending so the best
+-- deals (stopover discounts) surface first.
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.search_flights(
     p_dep_iata    varchar,
@@ -325,6 +330,8 @@ RETURNS TABLE(
     arrival_time    timestamptz,
     class_name      varchar,
     price           numeric,
+    effective_price numeric,
+    stop_count      int,
     available_seats bigint,
     stopover_list   text
 )
@@ -340,6 +347,8 @@ BEGIN
         v.arrival_time,
         v.class_name,
         v.price,
+        v.effective_price,
+        v.stop_count,
         v.available_seats,
         -- Build stopover list from STOPOVER table using string_agg
         (
@@ -353,7 +362,7 @@ BEGIN
       AND v.flight_date        = p_travel_date
       AND (p_class_name IS NULL OR v.class_name = p_class_name)
       AND v.available_seats > 0
-    ORDER BY v.depart_time;
+    ORDER BY v.effective_price, v.depart_time;
 END;
 $$;
 
@@ -464,21 +473,26 @@ $$;
 -- 5) Revenue Statistics Report
 -- ============================================================
 -- Aggregates revenue by flight, seat class, route, and time period.
--- Includes load factor (seat occupancy rate) per class.
+-- Returns BOTH class-level load factor (occupancy within a class)
+-- and flight-level load factor (occupancy of the whole aircraft).
+-- class_revenue_pct partitions by flight_id (UUID; unique per
+-- (schedule, date)) so each class's revenue is shown as a % of
+-- that flight's total revenue.
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.get_revenue_report()
 RETURNS TABLE (
-    flight_id               uuid,
-    flight_number           varchar,
-    airline_name            varchar,
-    route                   text,
-    flight_date             date,
-    revenue_month           timestamptz,
-    revenue_quarter         timestamptz,
-    class_name              varchar,
-    total_revenue           numeric,
-    class_revenue_pct       numeric,
-    load_factor_percentage  numeric
+    flight_id                uuid,
+    flight_number            varchar,
+    airline_name             varchar,
+    route                    text,
+    flight_date              date,
+    revenue_month            timestamptz,
+    revenue_quarter          timestamptz,
+    class_name               varchar,
+    total_revenue            numeric,
+    class_revenue_pct        numeric,
+    class_load_factor_pct    numeric,
+    flight_load_factor_pct   numeric
 )
 LANGUAGE plpgsql
 AS $$
@@ -496,11 +510,156 @@ BEGIN
         v.revenue AS total_revenue,
         ROUND(
             100 * v.revenue
-            / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_number, v.flight_date), 0),
+            / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_id), 0),
             2
         ) AS class_revenue_pct,
-        v.load_factor_pct AS load_factor_percentage
+        v.class_load_factor_pct,
+        v.flight_load_factor_pct
     FROM public."REVENUE_STATS_VIEW" v
     ORDER BY v.flight_date DESC, v.revenue DESC;
+END;
+$$;
+
+
+-- ############################################################
+-- PART C. ADVANCED FEATURE: INDEXING & QUERY OPTIMIZATION
+-- ############################################################
+--
+-- These helpers exist to demonstrate the second advanced feature
+-- from the project brief: scaled-data query performance analysis
+-- via EXPLAIN/ANALYZE.
+--
+-- Usage in the Streamlit app's Advanced Features tab:
+--   1) Call bulk_generate_test_bookings(N, seed) to load N random
+--      confirmed bookings across existing flights and seats.
+--   2) Call explain_search_flights / explain_revenue_report to
+--      see the executor plan + actual timings.
+--
+-- These functions do NOT affect production code paths; they are
+-- pure observability/test utilities.
+
+
+-- ============================================================
+-- 6) Bulk Generate Test Bookings (scale data for EXPLAIN ANALYZE)
+-- ============================================================
+-- Creates p_count random confirmed BOOKING rows (with PAYMENT
+-- and TICKET) across existing scheduled flights. Uses random
+-- seat picks among un-booked seats only, so the partial unique
+-- index on BOOKING(flight_id, seat_id) WHERE status != 'cancelled'
+-- is never violated.
+-- p_seed lets you reproduce the same random selection.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.bulk_generate_test_bookings(
+    p_count int DEFAULT 5000,
+    p_seed  int DEFAULT 42
+)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_inserted   int := 0;
+    v_attempted  int := 0;
+    v_max_tries  int;
+    v_flight_id  uuid;
+    v_seat_id    uuid;
+    v_class_id   uuid;
+    v_price      numeric;
+    v_customer   uuid;
+    v_booking_id uuid;
+BEGIN
+    IF p_count <= 0 THEN
+        RAISE EXCEPTION 'p_count must be > 0';
+    END IF;
+
+    -- Make selection reproducible
+    PERFORM setseed(LEAST(GREATEST(p_seed::float / 1000000.0, -1.0), 1.0));
+
+    v_max_tries := p_count * 4;  -- bail-out guard if seats run out
+
+    WHILE v_inserted < p_count AND v_attempted < v_max_tries LOOP
+        v_attempted := v_attempted + 1;
+
+        -- Pick a random scheduled flight + a random seat on its aircraft
+        -- that has no active booking yet.
+        SELECT f.flight_id, si.seat_id, sc.class_id, sc.price
+          INTO v_flight_id, v_seat_id, v_class_id, v_price
+        FROM      public."FLIGHT"         f
+        JOIN      public."SEAT_INVENTORY" si ON si.aircraft_id = f.aircraft_id
+        JOIN      public."SEAT_CLASS"     sc ON sc.class_id    = si.class_id
+        WHERE f.status = 'scheduled'
+          AND NOT EXISTS (
+              SELECT 1 FROM public."BOOKING" b
+              WHERE b.flight_id = f.flight_id
+                AND b.seat_id   = si.seat_id
+                AND b.status   != 'cancelled'
+          )
+        ORDER BY random()
+        LIMIT 1;
+
+        EXIT WHEN v_flight_id IS NULL;  -- no more available seats anywhere
+
+        -- Pick a random customer
+        SELECT customer_id INTO v_customer
+        FROM public."CUSTOMER"
+        ORDER BY random()
+        LIMIT 1;
+
+        EXIT WHEN v_customer IS NULL;
+
+        BEGIN
+            INSERT INTO public."BOOKING"(flight_id, customer_id, seat_id, status, price)
+            VALUES (v_flight_id, v_customer, v_seat_id, 'confirmed', v_price)
+            RETURNING booking_id INTO v_booking_id;
+
+            INSERT INTO public."PAYMENT"(booking_id, amount, method, status)
+            VALUES (v_booking_id, v_price, 'credit_card', 'completed');
+
+            INSERT INTO public."TICKET"(booking_id)
+            VALUES (v_booking_id);
+
+            v_inserted := v_inserted + 1;
+        EXCEPTION WHEN unique_violation THEN
+            -- Concurrent pick collision — just retry the loop
+            NULL;
+        END;
+    END LOOP;
+
+    RETURN v_inserted || ' test bookings generated (attempted ' || v_attempted || ').';
+END;
+$$;
+
+
+-- ============================================================
+-- 7) EXPLAIN ANALYZE helpers
+-- ============================================================
+-- Wrap the core read queries in EXPLAIN (ANALYZE, BUFFERS) so the
+-- Streamlit app can render the executor plan + timings.
+-- Returns one text row per plan line.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.explain_search_flights(
+    p_dep_iata    varchar,
+    p_arr_iata    varchar,
+    p_travel_date date,
+    p_class_name  varchar DEFAULT NULL
+)
+RETURNS SETOF text
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY EXECUTE
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) '
+        'SELECT * FROM public.search_flights($1, $2, $3, $4)'
+    USING p_dep_iata, p_arr_iata, p_travel_date, p_class_name;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.explain_revenue_report()
+RETURNS SETOF text
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY EXECUTE
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) '
+        'SELECT * FROM public.get_revenue_report()';
 END;
 $$;
