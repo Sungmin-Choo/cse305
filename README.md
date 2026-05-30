@@ -75,13 +75,18 @@ Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 | 1 | `01_schema.sql` | Drops and recreates all tables, indexes, and views |
 | 2 | `02_functions.sql` | Creates triggers and stored procedures |
 | 3 | `03_seed_sample_data.sql` | Inserts demo accounts (STAFF + CUSTOMER) and two demo stopover schedules |
-| 4 | `04_grants.sql` | Grants table / view / function privileges to the `anon` role **and** disables Row Level Security on every table |
+| 4 | `04_grants.sql` | Grants schema USAGE + table / view / function privileges, and disables Row Level Security on every table |
 
 > **Important:** `01_schema.sql` starts with `DROP TABLE IF EXISTS ... CASCADE` for all tables.
 > Re-running it will **delete all data** and re-arm Supabase's default RLS.
 > Always finish with `04_grants.sql` to restore Data-API access.
 
 > **Symptom if step 4 is skipped:** Login returns "Invalid email or password" even with correct credentials, because the SELECT against `CUSTOMER` / `STAFF` silently returns 0 rows under the default-enabled RLS.
+
+> **Symptom — `permission denied for schema public`:** The ETL (or app) cannot read or write any table.
+> Root cause: Supabase's updated Data API policy (effective 2026-05-30) requires an explicit
+> `GRANT USAGE ON SCHEMA public` — previously this was implicit. The current `04_grants.sql` includes
+> this grant. **Fix:** re-run `04_grants.sql` in the SQL Editor, then retry the ETL.
 
 ### 4. Load Real Flight Data (ETL)
 
@@ -115,6 +120,36 @@ streamlit run app.py
 ```
 
 Open `http://localhost:8501` in your browser.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `permission denied for schema public` (ETL or app) | Supabase policy (effective 2026-05-30) now requires explicit `GRANT USAGE ON SCHEMA public`. | Re-run `04_grants.sql` in the Supabase SQL Editor, then retry. |
+| `Invalid email or password` on login (credentials are correct) | `04_grants.sql` was not run after the last schema reset, so RLS is active and all SELECTs return 0 rows. | Re-run `04_grants.sql`. |
+| ETL prints `ERROR: … SUPABASE_SERVICE_ROLE_KEY must be set` | `.env` is missing `SUPABASE_SERVICE_ROLE_KEY`. | Add it: Supabase Dashboard → Project Settings → API → *service_role* (secret). |
+| ETL hangs or is very slow | Network throttling with 336 k rows. | Use `--limit 5000` for a quick demo load, or let it run to completion (~10–15 min). |
+| App dropdowns show no airports after full reset | `03_seed_sample_data.sql` or the ETL was not run yet. | Run SQL files in order (steps 1–4), then run the ETL. |
+
+### Full reset + reload procedure
+
+If you need to start completely fresh:
+
+```bash
+# 1. In Supabase SQL Editor (in this order):
+#    01_schema.sql  →  02_functions.sql  →  03_seed_sample_data.sql  →  04_grants.sql
+
+# 2. In your terminal — smoke test first:
+python seed_from_csv.py --limit 2000 --with-history 200
+
+# 3. If smoke test passes, full load:
+python seed_from_csv.py --truncate --with-history 5000
+
+# 4. Launch the app:
+streamlit run app.py
+```
 
 ---
 

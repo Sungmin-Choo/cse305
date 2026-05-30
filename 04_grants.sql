@@ -23,6 +23,20 @@
 
 
 -- ============================================================
+-- STEP 0. SCHEMA USAGE — required since Supabase policy 2026-05-30
+-- ============================================================
+-- PostgreSQL requires USAGE on a schema before any role can
+-- access objects inside it, even if the role has table-level
+-- grants.  Supabase's updated Data API policy (effective
+-- 2026-05-30) no longer grants this implicitly for new projects.
+-- Without this, any role — including service_role — receives:
+--   "permission denied for schema public"
+
+grant usage on schema public
+  to anon, authenticated, service_role;
+
+
+-- ============================================================
 -- STEP 1. TABLE GRANTS — anon / authenticated / service_role
 -- ============================================================
 -- The app uses supabase-py with the anon key (Data API),
