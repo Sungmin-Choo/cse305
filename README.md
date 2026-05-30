@@ -33,7 +33,10 @@ SUNY Korea — Term Project
 cse305/
 ├── 01_schema.sql           # DDL: tables, indexes, views
 ├── 02_functions.sql        # Triggers and stored procedures
-├── 03_seed_sample_data.sql # Sample data for demonstration
+├── 03_seed_sample_data.sql # Demo accounts + 2 stopover demo schedules
+├── 04_grants.sql           # RLS disable + anon privileges
+├── seed_from_csv.py        # ETL: loads nycflights13 flights.csv → Supabase
+├── flights.csv             # nycflights13 dataset (336,776 rows, not committed)
 ├── app.py                  # Streamlit application
 ├── .env                    # Supabase credentials (not committed)
 └── README.md
@@ -56,7 +59,12 @@ Create a `.env` file in the project root:
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 ```
+
+> **Where to find `SUPABASE_SERVICE_ROLE_KEY`:** Supabase Dashboard → Project Settings → API → *service_role* (secret).
+> This key is required only by `seed_from_csv.py` (the bulk ETL). It bypasses RLS for large inserts.
+> **Never commit this key to git** — keep `.env` in `.gitignore`.
 
 ### 3. Run SQL Files in Order
 
@@ -66,7 +74,7 @@ Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 |---|---|---|
 | 1 | `01_schema.sql` | Drops and recreates all tables, indexes, and views |
 | 2 | `02_functions.sql` | Creates triggers and stored procedures |
-| 3 | `03_seed_sample_data.sql` | Inserts sample airlines, airports, aircraft, customers, staff |
+| 3 | `03_seed_sample_data.sql` | Inserts demo accounts (STAFF + CUSTOMER) and two demo stopover schedules |
 | 4 | `04_grants.sql` | Grants table / view / function privileges to the `anon` role **and** disables Row Level Security on every table |
 
 > **Important:** `01_schema.sql` starts with `DROP TABLE IF EXISTS ... CASCADE` for all tables.
@@ -75,7 +83,32 @@ Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 
 > **Symptom if step 4 is skipped:** Login returns "Invalid email or password" even with correct credentials, because the SELECT against `CUSTOMER` / `STAFF` silently returns 0 rows under the default-enabled RLS.
 
-### 4. Run the Application
+### 4. Load Real Flight Data (ETL)
+
+Run the Python ETL script to load the **nycflights13** dataset (336,776 real US-domestic flights from 2013, date-shifted to 2026):
+
+```bash
+# Smoke test — loads ~2 000 flights + 200 historical bookings (~1 min)
+python seed_from_csv.py --limit 2000 --with-history 200
+
+# Full load — all 336 k flights + 5 000 historical bookings (~10–15 min)
+python seed_from_csv.py --truncate --with-history 5000
+```
+
+**What the ETL adds on top of `03_seed_sample_data.sql`:**
+- 16 US carriers (AA, DL, UA, B6, WN, AS, HA, F9, …)
+- ~108 US airports (EWR, LGA, JFK + 105 destinations)
+- Distance-tiered fleet: short/medium/long-haul aircraft per carrier
+- ~3,000 flight schedules (one per unique carrier + flight# + route)
+- Up to 336,776 individual flights (date-shifted 2013 → 2026)
+- Historical BOOKING + PAYMENT + TICKET on past-dated flights (for revenue demo)
+- Past flights (before 2026-05-30) are then flipped to `arrived`
+
+**Pricing model:** Economy base varies by distance tier (short < 700 mi → $120; medium → $200; long → $380). Business ≈ 2.5× Economy; First ≈ 5× Economy. Prices are stored on the aircraft's `SEAT_CLASS`, consistent with the physical-asset schema design.
+
+**Demo stopover schedules** (loaded by `03_seed_sample_data.sql`, not the CSV) are kept to demonstrate the 15%-per-stop discount feature — the CSV contains only direct flights.
+
+### 5. Run the Application
 
 ```bash
 streamlit run app.py
