@@ -7,12 +7,12 @@ SUNY Korea — Term Project
 
 ## Team Members
 
-| Name |
-|---|
-| Chloe Darosa |
-| Sungmin Choo |
-| Jaeheon Park |
-| Jaehun Yoo   |
+| Name | Email |
+|---|---|
+| Chloe Darosa | elisabethchloe.mbimbedarosa@stonybrook.edu |
+| Sungmin Choo | sungmin.choo@stonybrook.edu |
+| Jaeheon Park | jaeheon.park@stonybrook.edu |
+| Jaehun Yoo   | jaehun.yoo@stonybrook.edu |
 
 ---
 

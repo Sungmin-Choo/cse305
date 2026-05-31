@@ -485,17 +485,16 @@ def staff_dashboard():
                     vf_str = str(vf)
                     vu_str = str(vu)
 
-                    schedules = supabase.table("FLIGHT_SCHEDULE").select("*") \
-                        .eq("flight_number", fn) \
-                        .eq("depart_time", dept_str) \
-                        .eq("arrival_time", arrt_str) \
-                        .eq("days_of_week", days_str) \
-                        .eq("valid_from", vf_str) \
-                        .eq("valid_until", vu_str).execute()
+                    existing_fn = supabase.table("FLIGHT_SCHEDULE") \
+                        .select("flight_number") \
+                        .eq("flight_number", fn.strip()) \
+                        .limit(1) \
+                        .execute().data
+
                     if dep_iata == arr_iata:
                         st.error("Departure and arrival must differ.")
-                    elif len(schedules.data) != 0:
-                        st.error("Same schedule already exists.")
+                    elif existing_fn:
+                        st.error(f"The flight number '{fn}' already exists.")
                     elif not days:
                         st.error("Select at least one operating day.")
                     elif not fn.strip():
@@ -561,7 +560,7 @@ def staff_dashboard():
             try:
                 all_schedules = supabase.table("FLIGHT_SCHEDULE") \
                     .select("schedule_id, flight_number, depart_airport_iata, "
-                            "dest_airport_iata, days_of_week, valid_from, valid_until") \
+                            "dest_airport_iata, depart_time, days_of_week, valid_from, valid_until") \
                     .execute().data
             except Exception as e:
                 st.error(f"Failed to load schedules: {e}")
@@ -572,7 +571,7 @@ def staff_dashboard():
             else:
                 sched_opts = {
                     (f"{s['flight_number']} — {s['depart_airport_iata']}→{s['dest_airport_iata']}"
-                     f" — {s['days_of_week']} — valid {s['valid_from']}…{s['valid_until']}"): s["schedule_id"]
+                     f" — {str(s['depart_time'])[:5]} — {s['days_of_week']} — valid {s['valid_from']}…{s['valid_until']}"): s["schedule_id"]
                     for s in all_schedules
                 }
                 sched_lbl = st.selectbox("Schedule", list(sched_opts.keys()), key="g_sched")
@@ -1225,6 +1224,18 @@ END; $$;""", language="sql")
                     st.success(str(res.data))
                 except Exception as e:
                     st.error(f"Bulk generator error: {e}")
+
+            st.divider()
+            st.warning("**Clear All Bookings** — deletes every BOOKING, PAYMENT, TICKET, and REFUND row. Use only in demo/test environments.")
+            if st.button("Clear All Bookings", key="btn_clear_bookings"):
+                try:
+                    supabase.table("TICKET").delete().neq("ticket_id", "00000000-0000-0000-0000-000000000000").execute()
+                    supabase.table("REFUND").delete().neq("refund_id", "00000000-0000-0000-0000-000000000000").execute()
+                    supabase.table("PAYMENT").delete().neq("payment_id", "00000000-0000-0000-0000-000000000000").execute()
+                    supabase.table("BOOKING").delete().neq("booking_id", "00000000-0000-0000-0000-000000000000").execute()
+                    st.success("All bookings, payments, tickets, and refunds have been cleared.")
+                except Exception as e:
+                    st.error(f"Clear failed: {e}")
 
             # Show current scale
             try:
