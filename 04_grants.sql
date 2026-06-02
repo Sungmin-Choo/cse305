@@ -154,6 +154,18 @@ grant execute on function public.explain_search_flights(varchar, varchar, date, 
 grant execute on function public.explain_revenue_report()
   to anon, authenticated, service_role;
 
+grant execute on function public.search_connections(varchar, varchar, date, varchar)
+  to anon, authenticated, service_role;
+
+grant execute on function public.create_itinerary_booking(uuid, uuid, uuid, numeric, uuid, uuid, numeric)
+  to anon, authenticated, service_role;
+
+grant execute on function public.cancel_itinerary(uuid)
+  to anon, authenticated, service_role;
+
+grant execute on function public.explain_search_connections(varchar, varchar, date, varchar)
+  to anon, authenticated, service_role;
+
 
 -- ============================================================
 -- STEP 4. DISABLE ROW LEVEL SECURITY

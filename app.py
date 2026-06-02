@@ -150,6 +150,181 @@ def fmt_cols(df, rename_map, keep):
     return df[[c for c in keep if c in df.columns]]
 
 
+def _load_seats(flight_id: str, class_name: str) -> list:
+    """Return available [{seat_id, seat_number}] for a flight+class."""
+    try:
+        fd = supabase.table("FLIGHT").select("aircraft_id") \
+            .eq("flight_id", flight_id).limit(1).execute().data
+        if not fd:
+            return []
+        ac_id = fd[0]["aircraft_id"]
+        cd = supabase.table("SEAT_CLASS").select("class_id") \
+            .eq("aircraft_id", ac_id).eq("class_name", class_name) \
+            .limit(1).execute().data
+        if not cd:
+            return []
+        class_id = cd[0]["class_id"]
+        all_seats = supabase.table("SEAT_INVENTORY") \
+            .select("seat_id, seat_number").eq("class_id", class_id).execute().data
+        booked = {
+            b["seat_id"] for b in
+            supabase.table("BOOKING").select("seat_id")
+            .eq("flight_id", flight_id).eq("status", "confirmed").execute().data
+        }
+        return [s for s in all_seats if s["seat_id"] not in booked]
+    except Exception:
+        return []
+
+
+def _render_direct_card(idx, row, dep_iata, arr_iata, user, active_idx):
+    dep_t = pd.to_datetime(row["depart_time"]).strftime("%H:%M")
+    arr_t = pd.to_datetime(row["arrival_time"]).strftime("%H:%M")
+    stops = int(row.get("stop_count", 0))
+    eff   = float(row["effective_price"])
+    base  = float(row["price"])
+    route = build_route(dep_iata, arr_iata, row.get("stopover_list"))
+    avail = int(row.get("available_seats", 0))
+
+    c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+    with c1:
+        st.markdown(f"**{row['flight_number']}** — {row['airline_name']}")
+        stop_label = ("Direct" if stops == 0
+                      else f"{stops} stop{'s' if stops > 1 else ''} (multi-leg route)")
+        st.caption(f"{route}  •  {stop_label}")
+    with c2:
+        st.markdown(f"🛫 **{dep_t}** → 🛬 **{arr_t}**")
+        st.caption(row.get("class_name", ""))
+    with c3:
+        st.markdown(f"**${eff:.2f}**")
+        if stops > 0 and base > eff:
+            st.caption(f"Base ${base:.2f}  |  {avail} seat(s)")
+        else:
+            st.caption(f"{avail} seat(s) available")
+    with c4:
+        if active_idx == idx:
+            if st.button("✕", key=f"cclose_{idx}"):
+                st.session_state["booking_card_idx"] = None
+                st.rerun()
+        else:
+            if st.button("Book →", key=f"cbook_{idx}", type="primary"):
+                st.session_state["booking_card_idx"] = idx
+                st.rerun()
+
+    if active_idx == idx:
+        st.divider()
+        avail_seats = _load_seats(row["flight_id"], row["class_name"])
+        if not avail_seats:
+            st.warning("No seats available in this class.")
+        else:
+            seat_opts  = {s["seat_number"]: s["seat_id"] for s in avail_seats}
+            chosen_num = st.selectbox("Select Seat", list(seat_opts.keys()), key=f"dseat_{idx}")
+            chosen_id  = seat_opts[chosen_num]
+            st.info(f"**{row['flight_number']}** · Seat **{chosen_num}** · **${eff:.2f}**")
+            if st.button("Confirm Booking", key=f"dconfirm_{idx}", type="primary"):
+                try:
+                    supabase.rpc("create_booking", {
+                        "p_customer_id": user["id"],
+                        "p_flight_id":   row["flight_id"],
+                        "p_seat_id":     chosen_id,
+                        "p_amount":      eff,
+                    }).execute()
+                    st.success(f"Booked: {row['flight_number']} seat {chosen_num} — ${eff:.2f}")
+                    st.session_state["booking_card_idx"] = None
+                    st.session_state.pop("my_bookings", None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Booking failed: {e}")
+
+
+def _render_connection_card(idx, row, dep_iata, arr_iata, user, active_idx):
+    f1d  = pd.to_datetime(row["flight1_depart"]).strftime("%H:%M")
+    f1a  = pd.to_datetime(row["flight1_arrival"]).strftime("%H:%M")
+    f2d  = pd.to_datetime(row["flight2_depart"]).strftime("%H:%M")
+    f2a  = pd.to_datetime(row["flight2_arrival"]).strftime("%H:%M")
+    hub  = row["hub_iata"]
+    cpr  = float(row["connection_price"])
+    lp1  = float(row["leg1_price"])
+    lp2  = float(row["leg2_price"])
+    lmin = int(row["layover_minutes"])
+    lh, lm = divmod(lmin, 60)
+
+    c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+    with c1:
+        st.markdown(f"**{row['flight1_number']} + {row['flight2_number']}** — {row['flight1_airline']}")
+        st.caption(f"{dep_iata} → **{hub}** → {arr_iata}  •  Connection")
+    with c2:
+        st.markdown(f"🛫 **{f1d}**→{f1a} | {f2d}→**{f2a}** 🛬")
+        st.caption(f"Layover {lh}h {lm}m  |  {row.get('class_name', '')}")
+    with c3:
+        st.markdown(f"**${cpr:.2f}** total")
+        saving = (lp1 + lp2) - cpr
+        if saving > 0:
+            st.caption(f"Save **${saving:.2f}**  |  {row['leg1_available']}/{row['leg2_available']} seats/leg")
+        else:
+            st.caption(f"{row['leg1_available']}/{row['leg2_available']} seats per leg")
+    with c4:
+        if active_idx == idx:
+            if st.button("✕", key=f"cclose_{idx}"):
+                st.session_state["booking_card_idx"] = None
+                st.rerun()
+        else:
+            if st.button("Book →", key=f"cbook_{idx}", type="primary"):
+                st.session_state["booking_card_idx"] = idx
+                st.rerun()
+
+    if active_idx == idx:
+        st.divider()
+        cl1, cl2 = st.columns(2)
+        with cl1:
+            st.markdown(f"**Leg 1:** {row['flight1_number']} — {dep_iata}→{hub}")
+            seats1 = _load_seats(row["flight1_id"], row["class_name"])
+            if seats1:
+                opts1 = {s["seat_number"]: s["seat_id"] for s in seats1}
+                sn1   = st.selectbox("Seat (Leg 1)", list(opts1.keys()), key=f"cs1_{idx}")
+                sid1  = opts1[sn1]
+            else:
+                st.warning("No seats available for Leg 1.")
+                sn1, sid1 = None, None
+        with cl2:
+            st.markdown(f"**Leg 2:** {row['flight2_number']} — {hub}→{arr_iata}")
+            seats2 = _load_seats(row["flight2_id"], row["class_name"])
+            if seats2:
+                opts2 = {s["seat_number"]: s["seat_id"] for s in seats2}
+                sn2   = st.selectbox("Seat (Leg 2)", list(opts2.keys()), key=f"cs2_{idx}")
+                sid2  = opts2[sn2]
+            else:
+                st.warning("No seats available for Leg 2.")
+                sn2, sid2 = None, None
+
+        total_base = lp1 + lp2
+        amt1 = round(cpr * (lp1 / total_base), 2) if total_base > 0 else round(cpr / 2, 2)
+        amt2 = round(cpr - amt1, 2)
+
+        if sn1 and sn2:
+            st.info(
+                f"**{row['flight1_number']}** seat {sn1} + "
+                f"**{row['flight2_number']}** seat {sn2} — Total **${cpr:.2f}**"
+            )
+        if sid1 and sid2:
+            if st.button("Confirm Itinerary", key=f"cconfirm_{idx}", type="primary"):
+                try:
+                    supabase.rpc("create_itinerary_booking", {
+                        "p_customer_id": user["id"],
+                        "p_flight1_id":  row["flight1_id"],
+                        "p_seat1_id":    sid1,
+                        "p_amount1":     amt1,
+                        "p_flight2_id":  row["flight2_id"],
+                        "p_seat2_id":    sid2,
+                        "p_amount2":     amt2,
+                    }).execute()
+                    st.success(f"Itinerary booked: {dep_iata}→{hub}→{arr_iata} — Total ${cpr:.2f}")
+                    st.session_state["booking_card_idx"] = None
+                    st.session_state.pop("my_bookings", None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Itinerary booking failed: {e}")
+
+
 # ─────────────────────────────────────────────
 # CUSTOMER PORTAL
 # ─────────────────────────────────────────────
@@ -158,25 +333,20 @@ def customer_portal():
     user = st.session_state["user"]
     st.title(f"Customer Portal — {user['name']}")
 
-    tab_search, tab_mybookings = st.tabs([
-        "Search & Book Flights", "My Bookings"
-    ])
+    tab_search, tab_mybookings = st.tabs(["Search & Book Flights", "My Bookings"])
 
     # ── Tab 1: Search & Book Flights ──────────────────
     with tab_search:
-
-        # ── Option 1: Search Flights ──────────────────
-        with st.expander("Search Available Flights", expanded=True):
+        with st.expander("Search Flights", expanded=True):
             try:
                 airports = supabase.table("AIRPORT").select("iata_code, city").execute().data
             except Exception as e:
-                st.error(f"Failed to load master data: {e}")
+                st.error(f"Failed to load airports: {e}")
                 airports = []
-
             ap_opts = {f"{a['iata_code']} - {a['city']}": a["iata_code"] for a in airports}
 
             if not ap_opts:
-                st.warning("Critical Failure: Please contact Customer Support.")
+                st.warning("No airports found — run the seed script first.")
             else:
                 c1, c2 = st.columns(2)
                 with c1:
@@ -188,13 +358,19 @@ def customer_portal():
                     travel_date = st.date_input("Travel Date", value=date.today(), key="s_date")
                 with c4:
                     cls_filter = st.selectbox("Seat Class", ["All", "First", "Business", "Economy"], key="s_class")
+                c5, c6 = st.columns([1, 1])
+                with c5:
+                    search_clicked = st.button("Search Flights", key="btn_search", type="primary")
+                with c6:
+                    inc_conn = st.checkbox("Include dynamic connections", value=True, key="s_connections")
 
-                if st.button("Search", key="btn_search"):
+                if search_clicked:
                     dep = ap_opts[dep_lbl]
                     arr = ap_opts[arr_lbl]
                     if dep == arr:
                         st.error("Departure and arrival airports must differ.")
                     else:
+                        direct_rows, conn_rows = [], []
                         try:
                             res = supabase.rpc("search_flights", {
                                 "p_dep_iata":    dep,
@@ -202,134 +378,107 @@ def customer_portal():
                                 "p_travel_date": str(travel_date),
                                 "p_class_name":  None if cls_filter == "All" else cls_filter,
                             }).execute()
-                            rows = res.data or []
-                            st.session_state["search_results"] = rows
-                            st.session_state["search_dep"] = dep
-                            st.session_state["search_arr"] = arr
+                            direct_rows = res.data or []
+                            for r in direct_rows:
+                                r["_type"] = "direct"
                         except Exception as e:
-                            st.error(f"Error: {e}")
-                            st.session_state["search_results"] = []
+                            st.error(f"Search error: {e}")
 
-                rows = st.session_state.get("search_results")
-                if rows is not None:
-                    if not rows:
-                        st.info("No available flights found. Try a different date or route.")
-                    else:
-                        dep = st.session_state.get("search_dep")
-                        arr = st.session_state.get("search_arr")
-                        df = pd.DataFrame(rows)
-                        df["Route"] = df.apply(
-                            lambda r: build_route(dep, arr, r.get("stopover_list")), axis=1
-                        )
-                        df["Departure"] = pd.to_datetime(df["depart_time"]).dt.strftime("%Y-%m-%d %H:%M")
-                        df["Arrival"]   = pd.to_datetime(df["arrival_time"]).dt.strftime("%Y-%m-%d %H:%M")
-                        df["Stops"]     = df["stop_count"].astype(int)
-                        df_disp = df.rename(columns={
-                            "flight_number":   "Flight",
-                            "airline_name":    "Airline",
-                            "class_name":      "Class",
-                            "price":           "Base Price",
-                            "effective_price": "Price (USD)",
-                            "available_seats": "Avail. Seats",
-                        })[["Flight", "Airline", "Route", "Departure", "Arrival",
-                            "Class", "Stops", "Base Price", "Price (USD)", "Avail. Seats"]]
-                        st.dataframe(df_disp, use_container_width=True, hide_index=True)
-                        st.caption(
-                            "Stopover routes receive a 15% discount per stop. "
-                            "Pick one from the dropdown below to book it directly."
-                        )
+                        if inc_conn:
+                            try:
+                                cres = supabase.rpc("search_connections", {
+                                    "p_dep_iata":    dep,
+                                    "p_arr_iata":    arr,
+                                    "p_travel_date": str(travel_date),
+                                    "p_class_name":  None if cls_filter == "All" else cls_filter,
+                                }).execute()
+                                conn_rows = cres.data or []
+                                for r in conn_rows:
+                                    r["_type"] = "connection"
+                            except Exception:
+                                pass
 
-        # ── Option 2: Book Flight ─────────────────────
-        with st.expander("Create a Booking", expanded=True):
-            results = st.session_state.get("search_results") or []
-            if not results:
-                st.info("Search for flights first — your results will appear here for direct booking.")
+                        st.session_state.update({
+                            "sr_direct": direct_rows,
+                            "sr_conn":   conn_rows,
+                            "sr_dep":    dep,
+                            "sr_arr":    arr,
+                            "booking_card_idx": None,
+                        })
+
+        # ── Results + filter/sort controls ───────────
+        direct_rows = st.session_state.get("sr_direct")
+        conn_rows   = st.session_state.get("sr_conn", [])
+        dep = st.session_state.get("sr_dep", "")
+        arr = st.session_state.get("sr_arr", "")
+
+        if direct_rows is None:
+            st.caption("Enter your route and date above, then click **Search Flights**.")
+        else:
+            all_results = (direct_rows or []) + (conn_rows or [])
+            if not all_results:
+                st.info("No flights found for this route and date. Try a different date or class.")
             else:
-                dep = st.session_state.get("search_dep")
-                arr = st.session_state.get("search_arr")
+                fc1, fc2, fc3 = st.columns([2, 2, 2])
+                with fc1:
+                    sort_by = st.selectbox("Sort by",
+                        ["Price ↑", "Price ↓", "Departure time", "Arrival time"],
+                        key="res_sort")
+                with fc2:
+                    type_filter = st.radio("Show",
+                        ["All", "Direct only", "Connections only"],
+                        horizontal=True, key="res_type")
+                with fc3:
+                    airlines = sorted({
+                        r.get("airline_name") or r.get("flight1_airline", "")
+                        for r in all_results
+                    } - {""})
+                    airline_sel = st.multiselect("Airline", airlines, default=airlines, key="res_airline")
 
-                def _row_label(r):
-                    route   = build_route(dep, arr, r.get("stopover_list"))
-                    dep_dt  = pd.to_datetime(r["depart_time"]).strftime("%Y-%m-%d %H:%M")
-                    stops   = int(r["stop_count"])
-                    stop_lbl = f" • {stops} stop{'s' if stops != 1 else ''}" if stops > 0 else " • direct"
-                    return (f"{r['flight_number']} — {route} — {dep_dt} — "
-                            f"{r['class_name']} — ${float(r['effective_price']):.2f}{stop_lbl}")
+                filtered = list(all_results)
+                if type_filter == "Direct only":
+                    filtered = [r for r in filtered if r["_type"] == "direct"]
+                elif type_filter == "Connections only":
+                    filtered = [r for r in filtered if r["_type"] == "connection"]
+                if airline_sel:
+                    filtered = [r for r in filtered
+                                if (r.get("airline_name") or r.get("flight1_airline", ""))
+                                in airline_sel]
 
-                # Use the row index in session-state results as the selectbox value
-                row_indices = list(range(len(results)))
-                sel_idx = st.selectbox(
-                    "Select a flight to book",
-                    row_indices,
-                    format_func=lambda i: _row_label(results[i]),
-                    key="b_row_idx",
+                def _price(r):
+                    return float(r["effective_price"] if r["_type"] == "direct" else r["connection_price"])
+                def _dep_t(r):
+                    return str(r.get("depart_time") or r.get("flight1_depart", ""))
+                def _arr_t(r):
+                    return str(r.get("arrival_time") or r.get("flight2_arrival", ""))
+
+                if sort_by == "Price ↑":
+                    filtered.sort(key=_price)
+                elif sort_by == "Price ↓":
+                    filtered.sort(key=lambda r: -_price(r))
+                elif sort_by == "Departure time":
+                    filtered.sort(key=_dep_t)
+                elif sort_by == "Arrival time":
+                    filtered.sort(key=_arr_t)
+
+                d_cnt = sum(1 for r in filtered if r["_type"] == "direct")
+                c_cnt = len(filtered) - d_cnt
+                st.caption(
+                    f"**{len(filtered)} result(s)** — {d_cnt} direct, {c_cnt} connection(s).  "
+                    "Connection prices include a **15% group discount** (capped 10% below direct)."
                 )
-                chosen = results[sel_idx]
-                flight_id  = chosen["flight_id"]
-                cls_choice = chosen["class_name"]
-                eff_price  = float(chosen["effective_price"])
-                base_price = float(chosen["price"])
 
-                # Show a summary card
-                cols = st.columns(3)
-                cols[0].metric("Class", cls_choice)
-                cols[1].metric("Stops", int(chosen["stop_count"]))
-                if int(chosen["stop_count"]) > 0:
-                    cols[2].metric("Price (USD)", f"${eff_price:.2f}",
-                                   delta=f"-${base_price - eff_price:.2f} vs direct")
+                if not filtered:
+                    st.info("No results match the current filters.")
                 else:
-                    cols[2].metric("Price (USD)", f"${eff_price:.2f}")
-
-                # Load available seats for this flight + class
-                avail_seats = []
-                try:
-                    fd = supabase.table("FLIGHT").select("aircraft_id") \
-                        .eq("flight_id", flight_id).limit(1).execute().data
-                    if fd:
-                        ac_id = fd[0]["aircraft_id"]
-                        cd = supabase.table("SEAT_CLASS") \
-                            .select("class_id") \
-                            .eq("aircraft_id", ac_id) \
-                            .eq("class_name", cls_choice) \
-                            .limit(1).execute().data
-                        if cd:
-                            class_id = cd[0]["class_id"]
-                            all_seats = supabase.table("SEAT_INVENTORY") \
-                                .select("seat_id, seat_number") \
-                                .eq("class_id", class_id).execute().data
-                            booked_ids = {
-                                b["seat_id"] for b in
-                                supabase.table("BOOKING").select("seat_id")
-                                .eq("flight_id", flight_id).eq("status", "confirmed")
-                                .execute().data
-                            }
-                            avail_seats = [s for s in all_seats if s["seat_id"] not in booked_ids]
-                except Exception as e:
-                    st.warning(f"Could not load seats: {e}")
-
-                if avail_seats:
-                    seat_opts = {s["seat_number"]: s["seat_id"] for s in avail_seats}
-                    chosen_num = st.selectbox("Select Seat", list(seat_opts.keys()), key="b_seat")
-                    chosen_id  = seat_opts[chosen_num]
-
-                    if st.button("Confirm Booking", key="btn_book", type="primary"):
-                        try:
-                            res = supabase.rpc("create_booking", {
-                                "p_customer_id": user["id"],
-                                "p_flight_id":   flight_id,
-                                "p_seat_id":     chosen_id,
-                                "p_amount":      eff_price,
-                            }).execute()
-                            st.success(
-                                f"Booking confirmed for {chosen['flight_number']} — "
-                                f"seat {chosen_num} — ${eff_price:.2f}."
-                            )
-                            # Refresh availability for further selections
-                            st.session_state.pop("my_bookings", None)
-                        except Exception as e:
-                            st.error(f"Booking failed: {e}")
-                else:
-                    st.warning("No available seats in this class for the selected flight.")
+                    active = st.session_state.get("booking_card_idx")
+                    for i, row in enumerate(filtered):
+                        if row["_type"] == "direct":
+                            with st.container(border=True):
+                                _render_direct_card(i, row, dep, arr, user, active)
+                        else:
+                            with st.container(border=True):
+                                _render_connection_card(i, row, dep, arr, user, active)
 
     # ── Tab 2: My Bookings ─────────────────────
     with tab_mybookings:
@@ -345,43 +494,70 @@ def customer_portal():
             except Exception as e:
                 st.error(f"Error: {e}")
 
-        if st.session_state.get("my_bookings"):
-            bks = st.session_state["my_bookings"]
-            df = pd.DataFrame(bks)
-            cols = ["flight_number", "airline_name", "flight_date",
-                    "depart_airport_iata", "dest_airport_iata", "seat_number",
-                    "class_name", "price", "ticket_no"]
-            st.dataframe(
-                df[[c for c in cols if c in df.columns]],
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # Build descriptive labels: "KE001 — ICN→JFK — 2026-05-15 — Seat 1A — $1500.00"
-            def _bk_label(b):
-                return (f"{b.get('flight_number','?')} — "
-                        f"{b.get('depart_airport_iata','?')}→{b.get('dest_airport_iata','?')} — "
-                        f"{b.get('flight_date','?')} — "
-                        f"Seat {b.get('seat_number','?')} — "
-                        f"${float(b.get('price', 0)):.2f}")
-
-            id_by_label = {_bk_label(b): b["booking_id"] for b in bks}
-            sel_lbl = st.selectbox(
-                "Select a booking to cancel",
-                list(id_by_label.keys()),
-                key="b_cancel_sel",
-            )
-            sel = id_by_label[sel_lbl]
-            if st.button("Cancel Booking", key="btn_cancel"):
-                try:
-                    res = supabase.rpc("cancel_booking", {"p_booking_id": sel}).execute()
-                    st.success(str(res.data))
-                    st.session_state.pop("my_bookings", None)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Cancellation failed: {e}")
-        elif "my_bookings" in st.session_state:
+        bks = st.session_state.get("my_bookings")
+        if bks is None:
+            st.caption("Click 'Load My Bookings' to see your confirmed bookings.")
+        elif not bks:
             st.info("No active bookings found.")
+        else:
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
+            for b in bks:
+                key = b.get("itinerary_id") or b["booking_id"]
+                groups[key].append(b)
+
+            for gkey, legs in groups.items():
+                with st.container(border=True):
+                    if len(legs) == 1:
+                        b = legs[0]
+                        c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+                        with c1:
+                            st.markdown(f"**{b['flight_number']}** — {b['airline_name']}")
+                            st.markdown(f"{b['depart_airport_iata']} → {b['dest_airport_iata']}")
+                        with c2:
+                            st.caption(str(b['flight_date']))
+                            st.markdown(f"Seat **{b['seat_number']}** — {b['class_name']}")
+                        with c3:
+                            st.markdown(f"**${float(b['price']):.2f}**")
+                            st.caption((b.get('ticket_no') or '')[:18])
+                        with c4:
+                            if st.button("Cancel", key=f"cancel_{b['booking_id']}", type="secondary"):
+                                try:
+                                    res = supabase.rpc("cancel_booking",
+                                                       {"p_booking_id": b["booking_id"]}).execute()
+                                    st.success(str(res.data))
+                                    st.session_state.pop("my_bookings", None)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Cancellation failed: {e}")
+                    else:
+                        legs_s = sorted(legs, key=lambda l: str(l.get("depart_time", "")))
+                        total  = sum(float(l["price"]) for l in legs_s)
+                        itin_id = legs_s[0].get("itinerary_id")
+                        route_s = " → ".join(
+                            [legs_s[0]["depart_airport_iata"]]
+                            + [l["dest_airport_iata"] for l in legs_s]
+                        )
+                        c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+                        with c1:
+                            st.markdown("**Connection Itinerary**")
+                            st.markdown(route_s)
+                        with c2:
+                            st.caption(str(legs_s[0]['flight_date']))
+                            st.markdown("  ".join(f"Seat **{l['seat_number']}**" for l in legs_s))
+                        with c3:
+                            st.markdown(f"**${total:.2f}** total")
+                            st.caption(" + ".join(l["flight_number"] for l in legs_s))
+                        with c4:
+                            if st.button("Cancel All", key=f"cancel_itin_{itin_id}", type="secondary"):
+                                try:
+                                    res = supabase.rpc("cancel_itinerary",
+                                                       {"p_itinerary_id": itin_id}).execute()
+                                    st.success(str(res.data))
+                                    st.session_state.pop("my_bookings", None)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Cancellation failed: {e}")
 
         st.divider()
         st.subheader("Refund History")
@@ -427,8 +603,8 @@ def staff_dashboard():
     user = st.session_state["user"]
     st.title(f"Staff Dashboard — {user['name']}")
 
-    tab_flights, tab_master, tab_revenue, tab_adv = st.tabs([
-        "Flights", "Master Data", "Revenue Statistics", "Advanced Features"
+    tab_master, tab_flights, tab_revenue, tab_adv = st.tabs([
+        "Master Data", "Flights", "Revenue Statistics", "Advanced Features"
     ])
 
     # ═══════════════════════════════════════════
@@ -1163,11 +1339,14 @@ END; $$;""", language="sql")
             st.markdown("""
 | Procedure | Description |
 |---|---|
-| `generate_flights(start, end)` | Generates individual `FLIGHT` rows from all recurring `FLIGHT_SCHEDULE` records for the given date range. Skips already-generated dates. |
-| `search_flights(dep, arr, date, class)` | Returns available flights with seat counts and stopover-discounted `effective_price`. Includes stopover list via `string_agg`. |
-| `create_booking(customer, flight, seat, amount)` | **Atomic**: INSERT BOOKING → INSERT PAYMENT → INSERT TICKET. Rolls back all on any failure. |
-| `cancel_booking(booking_id)` | **Atomic**: DELETE TICKET → UPDATE BOOKING status='cancelled' → UPDATE PAYMENT status='refunded' → INSERT REFUND. |
-| `get_revenue_report()` | Aggregates revenue, class breakdown %, and per-flight + per-class load factors from `REVENUE_STATS_VIEW`. |
+| `generate_flights(sched_id, start, end)` | Generates individual `FLIGHT` rows from a `FLIGHT_SCHEDULE` for the given date range. Skips already-generated dates. |
+| `search_flights(dep, arr, date, class)` | Returns available direct/pre-defined-stopover flights with seat counts and `effective_price` (15%/stop discount). |
+| `search_connections(dep, arr, date, class)` | Finds dynamic A→hub→B itineraries by self-joining flights; prices = (leg1+leg2)×0.85, capped 10% below direct. |
+| `create_booking(customer, flight, seat, amount)` | **Atomic**: INSERT BOOKING → INSERT PAYMENT → INSERT TICKET. Rolls back on any failure. |
+| `create_itinerary_booking(customer, f1, seat1, amt1, f2, seat2, amt2)` | **Atomic two-leg**: books both legs under a shared `itinerary_id`; rolls back if either seat is taken. |
+| `cancel_booking(booking_id)` | **Atomic**: DELETE TICKET → UPDATE BOOKING='cancelled' → UPDATE PAYMENT='refunded' → INSERT REFUND. |
+| `cancel_itinerary(itinerary_id)` | **Atomic multi-leg**: cancels and refunds all legs sharing the itinerary_id. |
+| `get_revenue_report()` | Aggregates revenue, class breakdown %, and dual load factors from `REVENUE_STATS_VIEW`. |
 | `bulk_generate_test_bookings(N, seed)` | Loads N random confirmed bookings (with payment + ticket) for query-optimization testing. |
 """)
 

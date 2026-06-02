@@ -12,6 +12,7 @@ A  AIRLINE      — 16 US carriers from the CSV
 B  AIRPORT      — 3 origins + 105 destinations (curated names where known)
 C  AIRCRAFT     — distance-tiered fleet (≤3 aircraft per carrier)
 D  SEAT_CLASS   — 3 classes per aircraft; trigger auto-creates SEAT_INVENTORY
+   [Phases E–H run only with --with-flights]
 E  FLIGHT_SCHEDULE — one schedule per distinct (carrier, flight#, origin, dest)
 F  FLIGHT       — one row per (schedule, date); dates shifted 2013→2026
 G  BOOKING+PAYMENT+TICKET — historical bookings on past-dated flights
@@ -19,11 +20,15 @@ H  status flip  — past flights (< 2026-05-30) → arrived
 
 Usage
 -----
-  python seed_from_csv.py                        # full run (no history)
-  python seed_from_csv.py --limit 5000           # cap at 5 000 flights (smoke test)
-  python seed_from_csv.py --with-history 2000    # also create 2 000 historical bookings
-  python seed_from_csv.py --truncate             # clear FLIGHT+BOOKING first, then reload
-  python seed_from_csv.py --truncate --with-history 5000   # full clean reload + history
+  python seed_from_csv.py                        # master data only (A–D)
+  python seed_from_csv.py --with-flights         # full run including schedules & flights
+  python seed_from_csv.py --with-flights --limit 5000           # cap at 5 000 flights
+  python seed_from_csv.py --with-flights --with-history 2000    # also create 2 000 historical bookings
+  python seed_from_csv.py --with-flights --truncate             # clear FLIGHT+BOOKING first, then reload
+  python seed_from_csv.py --with-flights --truncate --with-history 5000  # full clean reload + history
+
+Default (no --with-flights): loads only airlines, airports, aircraft, and seat classes from CSV.
+Schedules and flights are created by the staff via the app (or via 03_seed_sample_data.sql for demos).
 
 Requirements
 ------------
@@ -743,14 +748,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Seed AirBooking Supabase from nycflights13 flights.csv"
     )
+    parser.add_argument("--with-flights",  action="store_true",
+                        help="Also run phases E–H (schedules, flights, history, status flip). "
+                             "Default: only phases A–D (master data)")
     parser.add_argument("--limit",        type=int, default=None,
-                        help="Cap total FLIGHT rows (useful for smoke tests)")
+                        help="Cap total FLIGHT rows (useful for smoke tests; requires --with-flights)")
     parser.add_argument("--with-history", type=int, default=0, metavar="N",
-                        help="Create N historical bookings on past-dated flights")
+                        help="Create N historical bookings on past-dated flights (requires --with-flights)")
     parser.add_argument("--batch",        type=int, default=500,
                         help="Insert batch size (default 500)")
     parser.add_argument("--truncate",     action="store_true",
-                        help="Clear FLIGHT+BOOKING data before loading")
+                        help="Clear FLIGHT+BOOKING data before loading (requires --with-flights)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -766,20 +774,29 @@ def main() -> None:
     df = pd.read_csv(CSV_PATH)
     print(f"  {len(df):,} rows loaded")
 
-    if args.truncate:
+    if args.truncate and args.with_flights:
         truncate_flight_data(supabase)
+    elif args.truncate:
+        print("Note: --truncate has no effect without --with-flights (no flights to truncate).")
 
+    # Phases A–D: master data (always run)
     airline_ids = phase_a_airlines(df, supabase)
     phase_b_airports(df, supabase)
     ac_map       = phase_c_aircraft(df, supabase, airline_ids)
     phase_d_seat_classes(supabase, ac_map)
-    sched_map    = phase_e_schedules(df, supabase, airline_ids, ac_map)
-    past_flights = phase_f_flights(df, supabase, sched_map, args.limit, args.batch)
 
-    if args.with_history > 0:
-        phase_g_history(supabase, past_flights, args.with_history, args.batch)
+    if args.with_flights:
+        # Phases E–H: schedules and flights (opt-in)
+        sched_map    = phase_e_schedules(df, supabase, airline_ids, ac_map)
+        past_flights = phase_f_flights(df, supabase, sched_map, args.limit, args.batch)
 
-    phase_h_flip_status(supabase, past_flights, args.batch)
+        if args.with_history > 0:
+            phase_g_history(supabase, past_flights, args.with_history, args.batch)
+
+        phase_h_flip_status(supabase, past_flights, args.batch)
+    else:
+        print("\n[E–H skipped] Master data only. Use --with-flights to also load schedules & flights.")
+        print("  Demo schedules and flights are seeded by 03_seed_sample_data.sql.")
 
     print_summary(supabase)
     print("\nDone. Run `streamlit run app.py` to launch the app.")

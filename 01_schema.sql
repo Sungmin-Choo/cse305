@@ -189,13 +189,14 @@ CREATE TABLE public."FLIGHT" (
 
 -- BOOKING
 CREATE TABLE public."BOOKING" (
-  booking_id  uuid        NOT NULL DEFAULT gen_random_uuid(),
-  flight_id   uuid        NOT NULL,             -- Booked flight
-  customer_id uuid        NOT NULL,             -- Booking customer
-  seat_id     uuid        NOT NULL,             -- Selected physical seat
-  booked_at   timestamptz NOT NULL DEFAULT now(),
-  status      varchar     NOT NULL DEFAULT 'confirmed',
-  price       numeric     NOT NULL,             -- Booking amount
+  booking_id   uuid        NOT NULL DEFAULT gen_random_uuid(),
+  flight_id    uuid        NOT NULL,             -- Booked flight
+  customer_id  uuid        NOT NULL,             -- Booking customer
+  seat_id      uuid        NOT NULL,             -- Selected physical seat
+  itinerary_id uuid        NULL,                 -- Groups legs of a dynamic connection (NULL = direct)
+  booked_at    timestamptz NOT NULL DEFAULT now(),
+  status       varchar     NOT NULL DEFAULT 'confirmed',
+  price        numeric     NOT NULL,             -- Booking amount (leg price for connections)
   CONSTRAINT BOOKING_pkey           PRIMARY KEY (booking_id),
   CONSTRAINT BOOKING_status_check   CHECK (status IN ('confirmed', 'cancelled')),
   CONSTRAINT BOOKING_price_check    CHECK (price >= 0),
@@ -269,10 +270,11 @@ CREATE INDEX idx_flight_status ON public."FLIGHT" (status);
 CREATE INDEX idx_schedule_route ON public."FLIGHT_SCHEDULE" (depart_airport_iata, dest_airport_iata);
 CREATE INDEX idx_schedule_valid ON public."FLIGHT_SCHEDULE" (valid_from, valid_until);
 
--- Booking lookup by customer, flight, and status
-CREATE INDEX idx_booking_customer ON public."BOOKING" (customer_id);
-CREATE INDEX idx_booking_flight   ON public."BOOKING" (flight_id);
-CREATE INDEX idx_booking_status   ON public."BOOKING" (status);
+-- Booking lookup by customer, flight, status, and itinerary
+CREATE INDEX idx_booking_customer   ON public."BOOKING" (customer_id);
+CREATE INDEX idx_booking_flight     ON public."BOOKING" (flight_id);
+CREATE INDEX idx_booking_status     ON public."BOOKING" (status);
+CREATE INDEX idx_booking_itinerary  ON public."BOOKING" (itinerary_id);
 
 -- Seat inventory lookup by aircraft and class
 CREATE INDEX idx_seat_aircraft ON public."SEAT_INVENTORY" (aircraft_id);
@@ -305,6 +307,7 @@ SELECT
   b.booking_id,
   b.flight_id,
   b.customer_id,
+  b.itinerary_id,
   c.name                  AS customer_name,
   c.email                 AS customer_email,
   f.flight_date,
@@ -454,9 +457,13 @@ DROP TRIGGER IF EXISTS trg_validate_booking ON public."BOOKING";
 
 DROP FUNCTION IF EXISTS public.generate_flights(uuid, date, date);
 DROP FUNCTION IF EXISTS public.search_flights(varchar, varchar, date, varchar);
+DROP FUNCTION IF EXISTS public.search_connections(varchar, varchar, date, varchar);
 DROP FUNCTION IF EXISTS public.create_booking(uuid, uuid, uuid, numeric);
+DROP FUNCTION IF EXISTS public.create_itinerary_booking(uuid, uuid, uuid, numeric, uuid, uuid, numeric);
 DROP FUNCTION IF EXISTS public.cancel_booking(uuid);
+DROP FUNCTION IF EXISTS public.cancel_itinerary(uuid);
 DROP FUNCTION IF EXISTS public.get_revenue_report();
 DROP FUNCTION IF EXISTS public.bulk_generate_test_bookings(int, int);
 DROP FUNCTION IF EXISTS public.explain_search_flights(varchar, varchar, date, varchar);
+DROP FUNCTION IF EXISTS public.explain_search_connections(varchar, varchar, date, varchar);
 DROP FUNCTION IF EXISTS public.explain_revenue_report();

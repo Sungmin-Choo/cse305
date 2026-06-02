@@ -663,3 +663,245 @@ BEGIN
         'SELECT * FROM public.get_revenue_report()';
 END;
 $$;
+
+
+-- ############################################################
+-- PART D. DYNAMIC CONNECTION SEARCH & ITINERARY BOOKING
+-- ############################################################
+--
+-- These functions implement dynamic two-leg connections built
+-- at query time by joining two FLIGHT_AVAILABILITY_VIEW rows
+-- that share a hub airport with a feasible layover (1–6 h).
+-- The itinerary_id column on BOOKING groups the two legs.
+
+
+-- ============================================================
+-- 8) Search Connections
+-- ============================================================
+-- Finds A→hub→B itineraries by self-joining FLIGHT_AVAILABILITY_VIEW
+-- on hub airport, same date, same class, with a 1–6 h layover window.
+-- Connection price = (leg1.price + leg2.price) * 0.85, capped at
+-- 90% of the cheapest direct fare for A→B when one exists —
+-- guaranteeing connections are cheaper than direct.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.search_connections(
+    p_dep_iata    varchar,
+    p_arr_iata    varchar,
+    p_travel_date date,
+    p_class_name  varchar DEFAULT NULL
+)
+RETURNS TABLE(
+    flight1_id       uuid,
+    flight1_number   varchar,
+    flight1_airline  varchar,
+    flight1_depart   timestamptz,
+    flight1_arrival  timestamptz,
+    flight2_id       uuid,
+    flight2_number   varchar,
+    flight2_airline  varchar,
+    flight2_depart   timestamptz,
+    flight2_arrival  timestamptz,
+    hub_iata         varchar,
+    class_name       varchar,
+    leg1_price       numeric,
+    leg2_price       numeric,
+    connection_price numeric,
+    layover_minutes  int,
+    leg1_available   bigint,
+    leg2_available   bigint
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_cheapest_direct numeric;
+BEGIN
+    -- Cheapest direct fare for this route/date/class (may be NULL if no direct)
+    SELECT MIN(v.effective_price) INTO v_cheapest_direct
+    FROM public."FLIGHT_AVAILABILITY_VIEW" v
+    WHERE v.depart_airport_iata = p_dep_iata
+      AND v.dest_airport_iata   = p_arr_iata
+      AND v.flight_date         = p_travel_date
+      AND (p_class_name IS NULL OR v.class_name = p_class_name)
+      AND v.available_seats > 0;
+
+    RETURN QUERY
+    SELECT
+        v1.flight_id,
+        v1.flight_number,
+        v1.airline_name,
+        v1.depart_time,
+        v1.arrival_time,
+        v2.flight_id,
+        v2.flight_number,
+        v2.airline_name,
+        v2.depart_time,
+        v2.arrival_time,
+        v1.dest_airport_iata,                             -- hub IATA
+        v1.class_name,
+        v1.price,
+        v2.price,
+        CASE
+            WHEN v_cheapest_direct IS NOT NULL
+            THEN LEAST(
+                ROUND((v1.price + v2.price) * 0.85, 2),
+                ROUND(v_cheapest_direct * 0.90, 2)
+            )
+            ELSE ROUND((v1.price + v2.price) * 0.85, 2)
+        END,
+        EXTRACT(EPOCH FROM (v2.depart_time - v1.arrival_time))::int / 60,
+        v1.available_seats,
+        v2.available_seats
+    FROM public."FLIGHT_AVAILABILITY_VIEW" v1
+    JOIN public."FLIGHT_AVAILABILITY_VIEW" v2
+      ON  v2.depart_airport_iata = v1.dest_airport_iata
+      AND v2.flight_date         = p_travel_date
+      AND v2.class_name          = v1.class_name
+      AND v2.depart_time > v1.arrival_time + interval '1 hour'
+      AND v2.depart_time < v1.arrival_time + interval '6 hours'
+    WHERE v1.depart_airport_iata = p_dep_iata
+      AND v2.dest_airport_iata   = p_arr_iata
+      AND v1.flight_date         = p_travel_date
+      AND v1.dest_airport_iata  != p_dep_iata
+      AND v1.dest_airport_iata  != p_arr_iata
+      AND v1.available_seats > 0
+      AND v2.available_seats > 0
+      AND (p_class_name IS NULL OR v1.class_name = p_class_name)
+    ORDER BY
+        CASE
+            WHEN v_cheapest_direct IS NOT NULL
+            THEN LEAST(ROUND((v1.price + v2.price) * 0.85, 2), ROUND(v_cheapest_direct * 0.90, 2))
+            ELSE ROUND((v1.price + v2.price) * 0.85, 2)
+        END,
+        v1.depart_time;
+END;
+$$;
+
+
+-- ============================================================
+-- 9) Create Itinerary Booking (atomic two-leg transaction)
+-- ============================================================
+-- Books two seats on two separate flights under a shared
+-- itinerary_id. If either leg fails (seat taken, trigger block)
+-- the entire transaction rolls back.
+-- Returns the itinerary_id so the app can reference the group.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.create_itinerary_booking(
+    p_customer_id uuid,
+    p_flight1_id  uuid,
+    p_seat1_id    uuid,
+    p_amount1     numeric,
+    p_flight2_id  uuid,
+    p_seat2_id    uuid,
+    p_amount2     numeric
+)
+RETURNS uuid
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_itinerary_id uuid;
+    v_booking1_id  uuid;
+    v_booking2_id  uuid;
+BEGIN
+    IF p_amount1 <= 0 OR p_amount2 <= 0 THEN
+        RAISE EXCEPTION 'Leg amounts must each be > 0';
+    END IF;
+
+    v_itinerary_id := gen_random_uuid();
+
+    -- Leg 1
+    BEGIN
+        INSERT INTO public."BOOKING"(flight_id, customer_id, seat_id, status, price, itinerary_id)
+        VALUES (p_flight1_id, p_customer_id, p_seat1_id, 'confirmed', p_amount1, v_itinerary_id)
+        RETURNING booking_id INTO v_booking1_id;
+    EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'The selected seat on leg 1 is already occupied.';
+    END;
+
+    INSERT INTO public."PAYMENT"(booking_id, amount, method, status)
+    VALUES (v_booking1_id, p_amount1, 'credit_card', 'completed');
+
+    INSERT INTO public."TICKET"(booking_id)
+    VALUES (v_booking1_id);
+
+    -- Leg 2
+    BEGIN
+        INSERT INTO public."BOOKING"(flight_id, customer_id, seat_id, status, price, itinerary_id)
+        VALUES (p_flight2_id, p_customer_id, p_seat2_id, 'confirmed', p_amount2, v_itinerary_id)
+        RETURNING booking_id INTO v_booking2_id;
+    EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'The selected seat on leg 2 is already occupied.';
+    END;
+
+    INSERT INTO public."PAYMENT"(booking_id, amount, method, status)
+    VALUES (v_booking2_id, p_amount2, 'credit_card', 'completed');
+
+    INSERT INTO public."TICKET"(booking_id)
+    VALUES (v_booking2_id);
+
+    RETURN v_itinerary_id;
+END;
+$$;
+
+
+-- ============================================================
+-- 10) Cancel Itinerary (atomic multi-leg cancellation)
+-- ============================================================
+-- Cancels all BOOKING legs sharing the itinerary_id atomically:
+-- DELETE TICKET → UPDATE BOOKING→cancelled → UPDATE PAYMENT→refunded
+-- → INSERT REFUND for each leg.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.cancel_itinerary(p_itinerary_id uuid)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    rec         record;
+    v_cancelled int := 0;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public."BOOKING"
+        WHERE itinerary_id = p_itinerary_id AND status = 'confirmed'
+    ) THEN
+        RAISE EXCEPTION 'No active bookings found for itinerary %.', p_itinerary_id;
+    END IF;
+
+    FOR rec IN
+        SELECT b.booking_id, p.payment_id, p.amount
+        FROM public."BOOKING" b
+        JOIN public."PAYMENT" p
+          ON p.booking_id = b.booking_id AND p.status = 'completed'
+        WHERE b.itinerary_id = p_itinerary_id AND b.status = 'confirmed'
+        FOR UPDATE OF b, p
+    LOOP
+        DELETE FROM public."TICKET"  WHERE booking_id  = rec.booking_id;
+        UPDATE public."BOOKING"      SET status = 'cancelled'  WHERE booking_id  = rec.booking_id;
+        UPDATE public."PAYMENT"      SET status = 'refunded'   WHERE payment_id  = rec.payment_id;
+        INSERT INTO public."REFUND"(payment_id, amount, status, refunded_at)
+        VALUES (rec.payment_id, rec.amount, 'completed', now());
+        v_cancelled := v_cancelled + 1;
+    END LOOP;
+
+    RETURN v_cancelled || ' leg(s) of itinerary ' || p_itinerary_id || ' cancelled and refunded.';
+END;
+$$;
+
+
+-- ============================================================
+-- 11) EXPLAIN ANALYZE — search_connections
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.explain_search_connections(
+    p_dep_iata    varchar,
+    p_arr_iata    varchar,
+    p_travel_date date,
+    p_class_name  varchar DEFAULT NULL
+)
+RETURNS SETOF text
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY EXECUTE
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) '
+        'SELECT * FROM public.search_connections($1, $2, $3, $4)'
+    USING p_dep_iata, p_arr_iata, p_travel_date, p_class_name;
+END;
+$$;

@@ -73,8 +73,8 @@ Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 | Step | File | What it does |
 |---|---|---|
 | 1 | `01_schema.sql` | Drops and recreates all tables, indexes, and views |
-| 2 | `02_functions.sql` | Creates triggers and stored procedures |
-| 3 | `03_seed_sample_data.sql` | Inserts demo accounts (STAFF + CUSTOMER) and two demo stopover schedules |
+| 2 | `02_functions.sql` | Creates triggers and stored procedures (including connection search) |
+| 3 | `03_seed_sample_data.sql` | Inserts demo accounts, airlines/airports/aircraft, demo schedules, and auto-generates flights for the next 60 days |
 | 4 | `04_grants.sql` | Grants schema USAGE + table / view / function privileges, and disables Row Level Security on every table |
 
 > **Important:** `01_schema.sql` starts with `DROP TABLE IF EXISTS ... CASCADE` for all tables.
@@ -88,30 +88,30 @@ Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
 > `GRANT USAGE ON SCHEMA public` — previously this was implicit. The current `04_grants.sql` includes
 > this grant. **Fix:** re-run `04_grants.sql` in the SQL Editor, then retry the ETL.
 
-### 4. Load Real Flight Data (ETL)
+### 4. Load Additional Master Data from CSV (Optional)
 
-Run the Python ETL script to load the **nycflights13** dataset (336,776 real US-domestic flights from 2013, date-shifted to 2026):
+The default demo (steps 1–4) is fully self-contained with curated real-world routes. To add bulk US-domestic carrier data for the **Indexing & Query Optimization** demo, run the ETL:
 
 ```bash
-# Smoke test — loads ~2 000 flights + 200 historical bookings (~1 min)
-python seed_from_csv.py --limit 2000 --with-history 200
+# Master data only (airlines, airports, aircraft, seat classes from CSV) — fast
+python seed_from_csv.py
 
-# Full load — all 336 k flights + 5 000 historical bookings (~10–15 min)
-python seed_from_csv.py --truncate --with-history 5000
+# Master data + all 336 k schedules/flights (for scale demo)
+python seed_from_csv.py --with-flights
+
+# Scale demo with historical bookings
+python seed_from_csv.py --with-flights --with-history 5000
 ```
 
-**What the ETL adds on top of `03_seed_sample_data.sql`:**
-- 16 US carriers (AA, DL, UA, B6, WN, AS, HA, F9, …)
-- ~108 US airports (EWR, LGA, JFK + 105 destinations)
-- Distance-tiered fleet: short/medium/long-haul aircraft per carrier
-- ~3,000 flight schedules (one per unique carrier + flight# + route)
-- Up to 336,776 individual flights (date-shifted 2013 → 2026)
-- Historical BOOKING + PAYMENT + TICKET on past-dated flights (for revenue demo)
-- Past flights (before 2026-05-30) are then flipped to `arrived`
+**What the default ETL (`seed_from_csv.py`) adds:**
+- 16 US carriers (AA, DL, UA, B6, WN, AS, HA, F9, …) → `AIRLINE`
+- ~108 US airports (EWR, LGA, JFK + 105 destinations) → `AIRPORT`
+- Distance-tiered fleet (short/medium/long per carrier) → `AIRCRAFT` + `SEAT_CLASS` + `SEAT_INVENTORY`
+- Schedules, flights, and bookings are **not** created by default — use `--with-flights` for the indexing demo.
+
+**`--with-flights` flag:** Adds ~3,000 flight schedules and up to 336,776 individual flights (date-shifted 2013→2026) plus historical bookings and status flips. Required for the EXPLAIN ANALYZE performance demo on a scaled dataset.
 
 **Pricing model:** Economy base varies by distance tier (short < 700 mi → $120; medium → $200; long → $380). Business ≈ 2.5× Economy; First ≈ 5× Economy. Prices are stored on the aircraft's `SEAT_CLASS`, consistent with the physical-asset schema design.
-
-**Demo stopover schedules** (loaded by `03_seed_sample_data.sql`, not the CSV) are kept to demonstrate the 15%-per-stop discount feature — the CSV contains only direct flights.
 
 ### 5. Run the Application
 
@@ -140,16 +140,28 @@ If you need to start completely fresh:
 ```bash
 # 1. In Supabase SQL Editor (in this order):
 #    01_schema.sql  →  02_functions.sql  →  03_seed_sample_data.sql  →  04_grants.sql
+#    (Step 3 auto-generates demo flights for the next 60 days — no manual step needed)
 
-# 2. In your terminal — smoke test first:
-python seed_from_csv.py --limit 2000 --with-history 200
+# 2. Optional: load CSV master data (airlines/airports/aircraft/seats only)
+python seed_from_csv.py
 
-# 3. If smoke test passes, full load:
-python seed_from_csv.py --truncate --with-history 5000
+# 3. Optional: add scale data for indexing demo
+python seed_from_csv.py --with-flights --with-history 5000
 
 # 4. Launch the app:
 streamlit run app.py
 ```
+
+### Schema migration (if you already have live data)
+
+To add `itinerary_id` to an existing `BOOKING` table without a full reset:
+
+```sql
+ALTER TABLE public."BOOKING" ADD COLUMN IF NOT EXISTS itinerary_id uuid NULL;
+CREATE INDEX IF NOT EXISTS idx_booking_itinerary ON public."BOOKING" (itinerary_id);
+```
+
+Then run `02_functions.sql` (safe to re-run — all functions use `CREATE OR REPLACE`) and `04_grants.sql` to grant the new functions.
 
 ---
 
@@ -176,38 +188,46 @@ streamlit run app.py
 
 ### Customer Portal
 
-After logging in as a Customer, three tabs are shown:
+After logging in as a Customer, two tabs are shown:
 
 #### Tab 1 — Search & Book Flights
 
 **Search:**
 1. Pick **Departure Airport** and **Arrival Airport** from the dropdowns
 2. Pick a **Travel Date** and optionally filter by **Seat Class**
-3. Click **Search** — results show flight, airline, full route (with stopovers in the middle), departure/arrival times, class, stop count, base price, **effective price**, and available seats. Results are sorted by effective price ascending so stopover deals surface first. No UUIDs are shown.
+3. Toggle **Include dynamic connections** to also search for two-leg A→hub→B itineraries
+4. Click **Search Flights** — results appear as **cards**, sorted by price ascending
 
-> **Stopover pricing:** Flights with stopovers receive a **15% discount per stop**, computed in `FLIGHT_AVAILABILITY_VIEW`. A 2-stop itinerary is 30% cheaper, capped at 60% off.
+**Configure results:**  
+Above the cards: sort by Price ↑/↓, Departure time, or Arrival time; toggle Direct / Connections only; filter by airline.
 
-> Sample routes in seed data include `ICN→JFK` (KE001, Mon/Wed/Fri), `HND→LHR` (NH106), `SIN→LHR` (SQ322), `DXB→JFK` (EK202 daily), plus 6 stopover routes such as `ICN→DXB→LHR` (EK350) and `LHR→SFO→SEA→YVR` (BA284, 2 stops). Individual flights must first be generated by Staff via the Flights tab.
+**Direct flight card:**  
+Shows flight number, airline, route, times, class, price. Click **Book →** to open an inline seat picker on the same card; select a seat and click **Confirm Booking**.
 
-**Book directly from results:**
-1. After searching, the **Create a Booking** expander auto-populates a selectbox of your search results — labels like `KE001 — ICN → DXB → LHR — 2026-05-15 23:00 — Economy — $297.50 • 1 stop`.
-2. Pick the flight; class is locked from the selection. A metrics strip shows class, stop count, and effective price (with the delta vs the direct fare for stopover flights).
-3. Pick a **Seat** from the dropdown — only seats currently available for that flight and class appear.
-4. Click **Confirm Booking** — the system atomically creates the booking, processes payment at the effective price, and issues a ticket.
+> **Pre-defined stopover routes** (e.g. `EK350 ICN→DXB→LHR`) appear as direct cards tagged "1 stop (multi-leg route)" with the 15%/stop discount already applied.
+
+**Connection card:**  
+Shows two flight numbers, airline, hub airport, layover duration, per-leg times, class, and **total price with savings vs full price**. Click **Book →** to open two inline seat pickers (one per leg); select seats and click **Confirm Itinerary**.
+
+> **Connection pricing:** `(leg1 + leg2) × 0.85`, capped at 90% of the cheapest direct fare — always cheaper than direct.  
+> Demo connection routes: `ICN→DXB→LHR` (EK101 + EK201, Economy $765 vs direct EK601 $1000), `ICN→NRT→LAX` (KE101 + KE202, Economy $646 vs direct KE017 $950).
+
+**All booking IDs are handled internally** — no UUID copy-pasting at any step.
 
 #### Tab 2 — My Bookings
 
-1. Click **Load My Bookings** to see all active (confirmed) bookings.
-2. Pick a booking from the dropdown — labels look like `KE001 — ICN→JFK — 2026-05-15 — Seat 1A — $1500.00`.
-3. Click **Cancel Booking** — the system atomically cancels the booking, marks the payment as refunded, and records a refund entry.
+1. Click **Load My Bookings** to see confirmed bookings as cards
+2. **Direct bookings**: one card per booking with a **Cancel** button
+3. **Connection bookings**: both legs grouped into one card (identified by shared `itinerary_id`) with a **Cancel All** button that atomically refunds both legs
+4. Refund history section shows all completed refunds
 
 ---
 
 ### Staff Dashboard
 
-After logging in as Staff, four tabs are shown:
+After logging in as Staff, four tabs are shown in demo order:
 
-#### Tab 1 — Flights
+#### Tab 1 — Master Data
 
 **Create Schedule & Generate Flights:**
 1. Select an aircraft (airline is auto-derived from aircraft ownership)
@@ -221,7 +241,8 @@ After logging in as Staff, four tabs are shown:
 
 #### Tab 2 — Master Data
 
-Full CRUD for all reference tables:
+Full CRUD for all reference tables (shown first in the demo sequence):
+
 
 | Sub-tab | Table | Operations |
 |---|---|---|
@@ -231,6 +252,14 @@ Full CRUD for all reference tables:
 | Seat Classes | `SEAT_CLASS` | Add (select aircraft, class, seat count, price) / Delete |
 
 > **Note:** Adding a Seat Class triggers **automatic seat inventory generation** (see Triggers Demo). Deleting an Airline cascades to its Aircraft → Seat Classes → Seat Inventory.
+
+#### Tab 2 — Flights
+
+**Create Schedule:** Select aircraft, set route/flight#/times/days/validity, click **Create Schedule**.
+
+**Generate Flights:** Select a schedule and date range, click **Generate Flights** → calls `generate_flights()`.
+
+**View Existing Flights:** Pick a date range and click **Load Flights**.
 
 #### Tab 3 — Revenue Statistics
 
