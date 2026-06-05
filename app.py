@@ -747,7 +747,7 @@ def staff_dashboard():
             else:
                 sched_opts = {
                     (f"{s['flight_number']} — {s['depart_airport_iata']}→{s['dest_airport_iata']}"
-                     f" — {str(s['depart_time'])[:5]} — {s['days_of_week']} — valid {s['valid_from']}…{s['valid_until']}"): s["schedule_id"]
+                     f" — {str(s['depart_time'])[:5]} — {s['days_of_week']}"): s["schedule_id"]
                     for s in all_schedules
                 }
                 sched_lbl = st.selectbox("Schedule", list(sched_opts.keys()), key="g_sched")
