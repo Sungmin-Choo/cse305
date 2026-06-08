@@ -17,11 +17,6 @@ DAY_NAME_TO_WEEKDAY = {
     "Fri": 4, "Sat": 5, "Sun": 6,
 }
 
-# 항공사별 테스트 네트워크
-# format:
-# "IATA": [
-#   (flight_no, origin, dest, depart_time, arrival_time, days_of_week)
-# ]
 NETWORK = {
     "KE": [
         ("KE101", "ICN", "NRT", "09:00:00", "11:20:00", "Mon,Wed,Fri,Sun"),
@@ -29,18 +24,20 @@ NETWORK = {
         ("KE301", "ICN", "YVR", "12:00:00", "22:00:00", "Mon,Thu,Sat"),
         ("KE401", "ICN", "LAX", "14:00:00", "23:00:00", "Tue,Fri,Sun"),
         ("KE501", "ICN", "DXB", "08:30:00", "13:30:00", "Wed,Sat"),
+        ("KE601", "ICN", "JFK", "10:30:00", "11:20:00", "Mon,Wed,Fri,Sun"),
     ],
     "EK": [
         ("EK111", "DXB", "ICN", "09:30:00", "22:00:00", "Mon,Wed,Fri"),
         ("EK211", "DXB", "LHR", "07:00:00", "12:00:00", "Daily"),
         ("EK311", "DXB", "YVR", "10:30:00", "18:30:00", "Tue,Thu,Sat"),
         ("EK411", "DXB", "NRT", "02:00:00", "16:00:00", "Mon,Thu,Sun"),
+        ("EK511", "DXB", "JFK", "16:00:00", "22:00:00", "Wed,Sat"),
     ],
     "BA": [
         ("BA101", "LHR", "ICN", "11:00:00", "06:30:00", "Tue,Thu,Sat"),
         ("BA201", "LHR", "DXB", "09:00:00", "18:30:00", "Daily"),
         ("BA301", "LHR", "YVR", "13:00:00", "22:00:00", "Mon,Wed,Fri"),
-        ("BA401", "LHR", "JFK", "10:00:00", "13:00:00", "Daily"),
+        ("BA401", "LHR", "JFK", "18:00:00", "21:00:00", "Daily"),
     ],
     "AA": [
         ("AA001", "JFK", "LAX", "08:00:00", "11:10:00", "Daily"),
@@ -116,15 +113,17 @@ NETWORK = {
     ],
     "OO": [
         ("OO101", "SLC", "PDX", "09:00:00", "11:05:00", "Daily"),
-        ("OO201", "SLC", "BOI", "14:10:00", "15:20:00", "Tue,Thu,Sat"),  # BOI 없으면 skip
+        ("OO201", "SLC", "BOI", "14:10:00", "15:20:00", "Tue,Thu,Sat"),
     ],
 }
 
-# route popularity for booking generation
 POPULARITY = {
+    ("ICN", "JFK"): 1.8,
     ("ICN", "LAX"): 1.45,
     ("ICN", "LHR"): 1.30,
     ("DXB", "LHR"): 1.35,
+    ("DXB", "JFK"): 1.40,
+    ("LHR", "JFK"): 1.38,
     ("JFK", "LAX"): 1.40,
     ("JFK", "SFO"): 1.32,
     ("JFK", "SEA"): 1.20,
@@ -219,41 +218,20 @@ def get_maps(supabase):
     return airline_map, airport_map, aircraft_by_airline, seat_class_map, seats_by_aircraft_class
 
 
-def ensure_schedule(
-    supabase,
-    aircraft_id,
-    origin,
-    dest,
-    flight_number,
-    depart_time,
-    arrival_time,
-    days_of_week,
-):
-    existing = supabase.table("FLIGHT_SCHEDULE").select("schedule_id").eq("flight_number", flight_number).eq(
-        "depart_airport_iata", origin
-    ).eq("dest_airport_iata", dest).limit(1).execute().data
-
-    if existing:
-        return existing[0]["schedule_id"]
-
-    inserted = supabase.table("FLIGHT_SCHEDULE").insert({
-        "aircraft_id": aircraft_id,
-        "depart_airport_iata": origin,
-        "dest_airport_iata": dest,
-        "flight_number": flight_number,
-        "depart_time": depart_time,
-        "arrival_time": arrival_time,
-        "days_of_week": days_of_week,
-        "valid_from": START_DATE.isoformat(),
-        "valid_until": END_DATE.isoformat(),
-    }).execute().data
-
-    return inserted[0]["schedule_id"]
-
-
 def create_schedules(supabase, airline_map, airport_map, aircraft_by_airline):
-    print("\n[1] Creating schedules...")
-    schedules = []
+    print("\n[1] Creating schedules (batched)...")
+
+    existing_rows = supabase.table("FLIGHT_SCHEDULE").select(
+        "schedule_id, flight_number, depart_airport_iata, dest_airport_iata, aircraft_id"
+    ).execute().data
+
+    existing_map = {
+        (r["flight_number"], r["depart_airport_iata"], r["dest_airport_iata"]): r
+        for r in existing_rows
+    }
+
+    schedule_insert_rows = []
+    desired_schedule_specs = []
 
     for airline_iata, routes in NETWORK.items():
         airline = airline_map.get(airline_iata)
@@ -266,7 +244,6 @@ def create_schedules(supabase, airline_map, airport_map, aircraft_by_airline):
             print(f"  Skipping {airline_iata}: no aircraft in DB")
             continue
 
-        # airline당 첫 aircraft 사용
         aircraft_id = airline_aircraft[0]["aircraft_id"]
 
         for flight_no, origin, dest, dep_t, arr_t, dow in routes:
@@ -274,18 +251,9 @@ def create_schedules(supabase, airline_map, airport_map, aircraft_by_airline):
                 print(f"  Skipping {flight_no}: missing airport {origin} or {dest}")
                 continue
 
-            schedule_id = ensure_schedule(
-                supabase,
-                aircraft_id,
-                origin,
-                dest,
-                flight_no,
-                dep_t,
-                arr_t,
-                dow,
-            )
-            schedules.append({
-                "schedule_id": schedule_id,
+            key = (flight_no, origin, dest)
+            desired_schedule_specs.append({
+                "key": key,
                 "aircraft_id": aircraft_id,
                 "airline_iata": airline_iata,
                 "flight_number": flight_no,
@@ -296,27 +264,69 @@ def create_schedules(supabase, airline_map, airport_map, aircraft_by_airline):
                 "days_of_week": dow,
             })
 
+            if key not in existing_map:
+                schedule_insert_rows.append({
+                    "aircraft_id": aircraft_id,
+                    "depart_airport_iata": origin,
+                    "dest_airport_iata": dest,
+                    "flight_number": flight_no,
+                    "depart_time": dep_t,
+                    "arrival_time": arr_t,
+                    "days_of_week": dow,
+                    "valid_from": START_DATE.isoformat(),
+                    "valid_until": END_DATE.isoformat(),
+                })
+
+    if schedule_insert_rows:
+        batch_insert(supabase, "FLIGHT_SCHEDULE", schedule_insert_rows)
+
+    all_rows = supabase.table("FLIGHT_SCHEDULE").select(
+        "schedule_id, flight_number, depart_airport_iata, dest_airport_iata, aircraft_id"
+    ).execute().data
+
+    final_map = {
+        (r["flight_number"], r["depart_airport_iata"], r["dest_airport_iata"]): r
+        for r in all_rows
+    }
+
+    schedules = []
+    for s in desired_schedule_specs:
+        row = final_map.get(s["key"])
+        if not row:
+            continue
+        schedules.append({
+            "schedule_id": row["schedule_id"],
+            "aircraft_id": row["aircraft_id"],
+            "airline_iata": s["airline_iata"],
+            "flight_number": s["flight_number"],
+            "origin": s["origin"],
+            "dest": s["dest"],
+            "depart_time": s["depart_time"],
+            "arrival_time": s["arrival_time"],
+            "days_of_week": s["days_of_week"],
+        })
+
     print(f"  Created/loaded schedules: {len(schedules)}")
     return schedules
 
 
 def generate_flights(supabase, schedules, one_per_route=False):
-    print("\n[2] Generating flights...")
+    print("\n[2] Generating flights (batched)...")
+
+    existing_rows = supabase.table("FLIGHT").select("schedule_id, flight_date").execute().data
+    existing_set = {(r["schedule_id"], r["flight_date"]) for r in existing_rows}
+
     flight_rows = []
     generated = 0
 
     for s in schedules:
         weekdays = parse_days_of_week(s["days_of_week"])
         d = START_DATE
-        created_for_this_route = False
 
         while d <= END_DATE:
             if d.weekday() in weekdays:
-                existing = supabase.table("FLIGHT").select("flight_id").eq("schedule_id", s["schedule_id"]).eq(
-                    "flight_date", d.isoformat()
-                ).limit(1).execute().data
-
-                if not existing:
+                key = (s["schedule_id"], d.isoformat())
+                if key not in existing_set:
                     depart_dt, arrival_dt = combine_datetimes(d, s["depart_time"], s["arrival_time"])
                     flight_rows.append({
                         "schedule_id": s["schedule_id"],
@@ -326,16 +336,12 @@ def generate_flights(supabase, schedules, one_per_route=False):
                         "arrival_time": arrival_dt,
                         "status": "scheduled",
                     })
+                    existing_set.add(key)
                     generated += 1
 
                 if one_per_route:
-                    created_for_this_route = True
                     break
-
             d += timedelta(days=1)
-
-        if one_per_route and created_for_this_route:
-            continue
 
     batch_insert(supabase, "FLIGHT", flight_rows)
     print(f"  Generated flights: {generated}")
@@ -373,7 +379,6 @@ def generate_bookings(supabase, seat_class_map, seats_by_aircraft_class):
         dep = flight["FLIGHT_SCHEDULE"]["depart_airport_iata"]
         dest = flight["FLIGHT_SCHEDULE"]["dest_airport_iata"]
 
-        # booking test라면 미래 flight도 일부 book 가능
         route_factor = POPULARITY.get((dep, dest), 1.0)
         month_factor = MONTH_FACTOR.get(flight_date.month, 1.0)
 
@@ -395,7 +400,6 @@ def generate_bookings(supabase, seat_class_map, seats_by_aircraft_class):
 
             target = int(len(available) * load)
 
-            # long/international처럼 보이는 route면 premium 보정
             if class_name == "Business" and route_factor >= 1.2 and len(available) > 0:
                 target = max(target, 1)
             if class_name == "First" and route_factor >= 1.25 and len(available) > 0:
