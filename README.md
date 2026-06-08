@@ -62,56 +62,37 @@ SUPABASE_ANON_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 ```
 
-> **Where to find `SUPABASE_SERVICE_ROLE_KEY`:** Supabase Dashboard → Project Settings → API → *service_role* (secret).
-> This key is required only by `seed_from_csv.py` (the bulk ETL). It bypasses RLS for large inserts.
-> **Never commit this key to git** — keep `.env` in `.gitignore`.
+> **Where to find keys:** Supabase Dashboard → Project Settings → API.
+> `SUPABASE_ANON_KEY` is the public key used by the app.
+> `SUPABASE_SERVICE_ROLE_KEY` is the secret key — required by `seed_from_csv.py` only.
+> **Never commit `.env` to git.**
 
-### 3. Run SQL Files in Order
+### 3. Initialize the Database
 
-Open **Supabase Dashboard → SQL Editor** and execute in this exact order:
+Open **Supabase Dashboard → SQL Editor** and run these four files **in order**:
 
-| Step | File | What it does |
+| # | File | What it does |
 |---|---|---|
 | 1 | `01_schema.sql` | Drops and recreates all tables, indexes, and views |
-| 2 | `02_functions.sql` | Creates triggers and stored procedures (including connection search) |
-| 3 | `03_seed_sample_data.sql` | Inserts demo accounts, airlines/airports/aircraft, demo schedules, and auto-generates flights for the next 60 days |
-| 4 | `04_grants.sql` | Grants schema USAGE + table / view / function privileges, and disables Row Level Security on every table |
+| 2 | `02_functions.sql` | Creates all triggers and stored procedures |
+| 3 | `03_seed_sample_data.sql` | Inserts demo accounts, airlines, airports, aircraft, schedules, and auto-generates flights for the next 60 days |
+| 4 | `04_grants.sql` | Grants all privileges and disables Row Level Security |
 
-> **Important:** `01_schema.sql` starts with `DROP TABLE IF EXISTS ... CASCADE` for all tables.
-> Re-running it will **delete all data** and re-arm Supabase's default RLS.
-> Always finish with `04_grants.sql` to restore Data-API access.
+> ⚠️ `01_schema.sql` drops **all tables and data**. Always finish with `04_grants.sql` — skipping it causes login failures (RLS blocks every query).
 
-> **Symptom if step 4 is skipped:** Login returns "Invalid email or password" even with correct credentials, because the SELECT against `CUSTOMER` / `STAFF` silently returns 0 rows under the default-enabled RLS.
+### 4. Load Demo Booking Data
 
-> **Symptom — `permission denied for schema public`:** The ETL (or app) cannot read or write any table.
-> Root cause: Supabase's updated Data API policy (effective 2026-05-30) requires an explicit
-> `GRANT USAGE ON SCHEMA public` — previously this was implicit. The current `04_grants.sql` includes
-> this grant. **Fix:** re-run `04_grants.sql` in the SQL Editor, then retry the ETL.
-
-### 4. Load Additional Master Data from CSV (Optional)
-
-The default demo (steps 1–4) is fully self-contained with curated real-world routes. To add bulk US-domestic carrier data for the **Indexing & Query Optimization** demo, run the ETL:
+Run the network seed script to generate 800+ synthetic bookings for realistic revenue statistics:
 
 ```bash
-# Master data only (airlines, airports, aircraft, seat classes from CSV) — fast
-python seed_from_csv.py
-
-# Master data + all 336 k schedules/flights (for scale demo)
-python seed_from_csv.py --with-flights
-
-# Scale demo with historical bookings
-python seed_from_csv.py --with-flights --with-history 5000
+python generate_airline_network_seed.py --reset --reset-schedules --one-per-month --with-bookings
 ```
 
-**What the default ETL (`seed_from_csv.py`) adds:**
-- 16 US carriers (AA, DL, UA, B6, WN, AS, HA, F9, …) → `AIRLINE`
-- ~108 US airports (EWR, LGA, JFK + 105 destinations) → `AIRPORT`
-- Distance-tiered fleet (short/medium/long per carrier) → `AIRCRAFT` + `SEAT_CLASS` + `SEAT_INVENTORY`
-- Schedules, flights, and bookings are **not** created by default — use `--with-flights` for the indexing demo.
-
-**`--with-flights` flag:** Adds ~3,000 flight schedules and up to 336,776 individual flights (date-shifted 2013→2026) plus historical bookings and status flips. Required for the EXPLAIN ANALYZE performance demo on a scaled dataset.
-
-**Pricing model:** Economy base varies by distance tier (short < 700 mi → $120; medium → $200; long → $380). Business ≈ 2.5× Economy; First ≈ 5× Economy. Prices are stored on the aircraft's `SEAT_CLASS`, consistent with the physical-asset schema design.
+This script:
+- Creates routes and flights across the demo airline network
+- Generates 800+ confirmed bookings owned by a pool account (`pool@demo.local`)
+- Caps demo account bookings at realistic counts: **alice = 3, bob = 2, charlie = 5**
+- Leaves revenue/load-factor totals unaffected (all bookings are counted)
 
 ### 5. Run the Application
 
@@ -123,48 +104,6 @@ Open `http://localhost:8501` in your browser.
 
 ---
 
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `permission denied for schema public` (ETL or app) | Supabase policy (effective 2026-05-30) now requires explicit `GRANT USAGE ON SCHEMA public`. | Re-run `04_grants.sql` in the Supabase SQL Editor, then retry. |
-| `Invalid email or password` on login (credentials are correct) | `04_grants.sql` was not run after the last schema reset, so RLS is active and all SELECTs return 0 rows. | Re-run `04_grants.sql`. |
-| ETL prints `ERROR: … SUPABASE_SERVICE_ROLE_KEY must be set` | `.env` is missing `SUPABASE_SERVICE_ROLE_KEY`. | Add it: Supabase Dashboard → Project Settings → API → *service_role* (secret). |
-| ETL hangs or is very slow | Network throttling with 336 k rows. | Use `--limit 5000` for a quick demo load, or let it run to completion (~10–15 min). |
-| App dropdowns show no airports after full reset | `03_seed_sample_data.sql` or the ETL was not run yet. | Run SQL files in order (steps 1–4), then run the ETL. |
-
-### Full reset + reload procedure
-
-If you need to start completely fresh:
-
-```bash
-# 1. In Supabase SQL Editor (in this order):
-#    01_schema.sql  →  02_functions.sql  →  03_seed_sample_data.sql  →  04_grants.sql
-#    (Step 3 auto-generates demo flights for the next 60 days — no manual step needed)
-
-# 2. Optional: load CSV master data (airlines/airports/aircraft/seats only)
-python seed_from_csv.py
-
-# 3. Optional: add scale data for indexing demo
-python seed_from_csv.py --with-flights --with-history 5000
-
-# 4. Launch the app:
-streamlit run app.py
-```
-
-### Schema migration (if you already have live data)
-
-To add `itinerary_id` to an existing `BOOKING` table without a full reset:
-
-```sql
-ALTER TABLE public."BOOKING" ADD COLUMN IF NOT EXISTS itinerary_id uuid NULL;
-CREATE INDEX IF NOT EXISTS idx_booking_itinerary ON public."BOOKING" (itinerary_id);
-```
-
-Then run `02_functions.sql` (safe to re-run — all functions use `CREATE OR REPLACE`) and `04_grants.sql` to grant the new functions.
-
----
-
 ## Demo Accounts
 
 | Role | Email | Password |
@@ -173,6 +112,57 @@ Then run `02_functions.sql` (safe to re-run — all functions use `CREATE OR REP
 | Customer | `bob@example.com` | `1234` |
 | Customer | `charlie@example.com` | `1234` |
 | Staff (Admin) | `admin@airbooking.local` | `1234` |
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Invalid email or password` (credentials are correct) | `04_grants.sql` was not run — RLS is active, all SELECTs return 0 rows. | Re-run `04_grants.sql` in SQL Editor. |
+| `permission denied for schema public` | Supabase now requires explicit `GRANT USAGE ON SCHEMA public`. | Re-run `04_grants.sql`. |
+| `SUPABASE_SERVICE_ROLE_KEY must be set` | `.env` is missing the service role key. | Add it: Dashboard → Project Settings → API → *service_role*. |
+| App shows no airports after reset | `03_seed_sample_data.sql` was not run. | Re-run all 4 SQL files in order. |
+| Bulk Generator returns 0 new bookings | All (flight × seat) slots are already taken. | Re-run the 4 SQL files + seed script to reset data, then try again. |
+| EXPLAIN shows "Function Scan" only | `02_functions.sql` has not been re-run after the fix. | Re-run `02_functions.sql` + `04_grants.sql` in SQL Editor. |
+
+### Full Reset Procedure
+
+```bash
+# Step 1 — Supabase SQL Editor (run in this exact order):
+#   01_schema.sql → 02_functions.sql → 03_seed_sample_data.sql → 04_grants.sql
+
+# Step 2 — Generate demo booking data:
+python generate_airline_network_seed.py --reset --reset-schedules --one-per-month --with-bookings
+
+# Step 3 — Launch the app:
+streamlit run app.py
+```
+
+### Optional: Scale Demo (CSV ETL)
+
+Only needed if you want to demonstrate EXPLAIN ANALYZE on a very large dataset (336k US-domestic flights from nycflights13):
+
+```bash
+# Master data only (airlines, airports, aircraft, seat classes) — safe to run alongside demo data
+python seed_from_csv.py
+
+# Full scale load: all 336k flights + historical bookings
+python seed_from_csv.py --with-flights --with-history 5000
+```
+
+> This is **not required** for the Final Demonstration. The network seed script (Step 4 above) provides sufficient data for all demos including EXPLAIN ANALYZE.
+
+### Schema Migration (existing live data only)
+
+To add the `itinerary_id` column to an existing `BOOKING` table without a full reset:
+
+```sql
+ALTER TABLE public."BOOKING" ADD COLUMN IF NOT EXISTS itinerary_id uuid NULL;
+CREATE INDEX IF NOT EXISTS idx_booking_itinerary ON public."BOOKING" (itinerary_id);
+```
+
+Then re-run `02_functions.sql` and `04_grants.sql`.
 
 ---
 
@@ -276,7 +266,10 @@ Click **Generate Revenue Report** to see:
 Showcases **both** advanced features from the project brief:
 
 1. **Triggers & Stored Procedures** — interactive demos of the three database triggers with live SQL code and live execution. See the [Triggers section](#triggers) below for details.
-2. **Indexing & Query Optimization** — index catalog, a `bulk_generate_test_bookings(N, seed)` panel that loads thousands of random bookings, and live `EXPLAIN (ANALYZE, BUFFERS)` panels for both `search_flights` and `get_revenue_report`. Use this to demonstrate index usage on a scaled dataset.
+   - *Demo 2 (`trg_validate_booking`)* selects a seat from the **same aircraft** as the chosen flight, so the status-check path fires as expected (not the aircraft-mismatch path).
+2. **Indexing & Query Optimization** — index catalog, a `bulk_generate_test_bookings(N, seed)` panel that loads random bookings, and live **side-by-side** `EXPLAIN ANALYZE` panels for both `search_flights` and `get_revenue_report`.
+   - After clicking **Run Bulk Generator**, the N most-recently-created bookings are shown in a scrollable results table.
+   - Each EXPLAIN panel shows two plans: **With Indexes** (current schema) on the left and **Without Indexes** (simulated via `SET LOCAL enable_indexscan/enable_bitmapscan = off`) on the right, making the index benefit directly visible. Plans are produced by inlining the base SQL — not by wrapping the function call — so PostgreSQL expands the view and reveals real `Index Scan` / `Seq Scan` nodes.
 
 ---
 
@@ -406,7 +399,12 @@ Inserts `p_count` random confirmed bookings (each with a paired PAYMENT and TICK
 
 #### `explain_search_flights(...)` / `explain_revenue_report()`
 
-Thin wrappers that execute `EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT)` around the corresponding core query and return one text row per plan line. Powers the live executor-plan panels in the app.
+Execute `EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT)` on the **inlined base SQL** (not on the function call), so the plan reveals actual `Index Scan` / `Seq Scan` nodes on the underlying tables. Each function returns **two plans** back-to-back:
+
+1. **With Indexes** — normal execution using the indexes defined in `01_schema.sql`.
+2. **Without Indexes (simulated)** — same query with `SET LOCAL enable_indexscan = off; enable_bitmapscan = off`, forcing sequential scans. The setting is scoped to the function call and reverts automatically.
+
+The app renders these as two labelled code boxes side-by-side, satisfying the project requirement to demonstrate execution plans *with and without* indexes.
 
 ---
 

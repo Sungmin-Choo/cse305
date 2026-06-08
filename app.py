@@ -94,7 +94,7 @@ def render_sidebar():
                     else:
                         try:
                             register_customer(r_email.strip(), r_pwd.strip(),
-                                              r_name.strip(), r_passport.strip())
+                                            r_name.strip(), r_passport.strip())
                             st.success("Account created. Please log in.")
                         except Exception as e:
                             st.error(f"Registration failed: {e}")
@@ -148,6 +148,26 @@ def _format_plan(data):
 def fmt_cols(df, rename_map, keep):
     df = df.rename(columns=rename_map)
     return df[[c for c in keep if c in df.columns]]
+
+
+def _render_explain_comparison(data):
+    """Split the EXPLAIN output on the '=== Without Indexes ===' marker and render two code boxes."""
+    rows = data or []
+    if rows and isinstance(rows[0], dict):
+        rows = [next(iter(r.values()), "") for r in rows]
+    full = "\n".join(str(x) for x in rows)
+
+    marker = "=== Without Indexes (simulated: index scans disabled) ==="
+    if marker in full:
+        parts = full.split(marker, 1)
+        with_part    = parts[0].replace("=== With Indexes ===", "").strip()
+        without_part = parts[1].strip()
+        st.markdown("**With Indexes** (current schema)")
+        st.code(with_part or "(no plan)", language="text")
+        st.markdown("**Without Indexes** (index scans disabled — simulated)")
+        st.code(without_part or "(no plan)", language="text")
+    else:
+        st.code(full or "(no plan returned)", language="text")
 
 
 def _load_seats(flight_id: str, class_name: str) -> list:
@@ -1224,13 +1244,16 @@ BEGIN
     RETURN NEW;
 END; $$;""", language="sql")
 
-            st.markdown("**Live Demo:** Set a flight to `'cancelled'` status, then attempt a booking — the trigger blocks it.")
+            st.markdown("**Live Demo:** Set a flight to `'departed'` status, then attempt a booking — the trigger blocks it.")
             try:
+                # Query ALL flights (not filtered by status) so the selected flight
+                # stays in the dropdown after its status is changed to 'departed'.
                 flights = supabase.table("FLIGHT") \
                     .select("flight_id, flight_date, status, FLIGHT_SCHEDULE(flight_number)") \
-                    .eq("status", "scheduled").limit(20).execute().data
+                    .in_("status", ["scheduled", "departed", "cancelled"]) \
+                    .order("flight_date", desc=True).limit(30).execute().data
                 flight_opts = {
-                    f"{r.get('FLIGHT_SCHEDULE',{}).get('flight_number','?')} on {r['flight_date']} [{r['flight_id'][:8]}...]": r["flight_id"]
+                    f"{r.get('FLIGHT_SCHEDULE',{}).get('flight_number','?')} on {r['flight_date']} [{r['status']}]": r["flight_id"]
                     for r in flights
                 }
             except Exception:
@@ -1238,7 +1261,10 @@ END; $$;""", language="sql")
 
             if flight_opts:
                 sel_f = st.selectbox("Select a flight for demo", list(flight_opts.keys()), key="d2_flt")
+                # Pin the selected flight_id in session_state so status changes
+                # on re-render don't silently swap it to a different flight.
                 flt_id = flight_opts[sel_f]
+                st.session_state["d2_locked_flt_id"] = flt_id
 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -1247,6 +1273,7 @@ END; $$;""", language="sql")
                             supabase.table("FLIGHT").update({"status": "departed"}) \
                                 .eq("flight_id", flt_id).execute()
                             st.warning("Flight set to 'departed'. Now try booking below.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
                 with c2:
@@ -1255,18 +1282,24 @@ END; $$;""", language="sql")
                             supabase.table("FLIGHT").update({"status": "scheduled"}) \
                                 .eq("flight_id", flt_id).execute()
                             st.success("Flight reset to 'scheduled'.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
 
+                locked_flt_id = st.session_state.get("d2_locked_flt_id", flt_id)
                 if st.button("Attempt Booking (should be blocked by trigger)", key="btn_d2_book"):
                     try:
-                        # Use a dummy customer and seat — trigger will fire before any real data matters
                         cust = supabase.table("CUSTOMER").select("customer_id").limit(1).execute().data
-                        seat = supabase.table("SEAT_INVENTORY").select("seat_id").limit(1).execute().data
+                        flt_ac = supabase.table("FLIGHT").select("aircraft_id, status") \
+                            .eq("flight_id", locked_flt_id).limit(1).execute().data
+                        seat = []
+                        if flt_ac:
+                            seat = supabase.table("SEAT_INVENTORY").select("seat_id") \
+                                .eq("aircraft_id", flt_ac[0]["aircraft_id"]).limit(1).execute().data
                         if cust and seat:
                             supabase.rpc("create_booking", {
                                 "p_customer_id": cust[0]["customer_id"],
-                                "p_flight_id":   flt_id,
+                                "p_flight_id":   locked_flt_id,
                                 "p_seat_id":     seat[0]["seat_id"],
                                 "p_amount":      100.0,
                             }).execute()
@@ -1274,7 +1307,7 @@ END; $$;""", language="sql")
                     except Exception as e:
                         st.error(f"Trigger blocked the booking: {e}")
             else:
-                st.info("No scheduled flights available for demo.")
+                st.info("No flights available for demo.")
 
         # ── Demo 3: Guard Seat Count Update ────────
         with st.expander("Demo 3 — trg_guard_seat_class_update (Guard Seat Count Changes)"):
@@ -1401,8 +1434,32 @@ END; $$;""", language="sql")
                         "p_seed":  int(bulk_seed),
                     }).execute()
                     st.success(str(res.data))
+                    # Fetch the most recently inserted bookings to display
+                    recent = supabase.table("BOOKING_VIEW") \
+                        .select("flight_number,airline_name,depart_airport_iata,dest_airport_iata,flight_date,seat_number,class_name,price,booked_at") \
+                        .eq("status", "confirmed") \
+                        .order("booked_at", desc=True) \
+                        .limit(int(bulk_n)) \
+                        .execute().data
+                    st.session_state["bulk_generated_rows"] = recent
                 except Exception as e:
                     st.error(f"Bulk generator error: {e}")
+
+            if st.session_state.get("bulk_generated_rows"):
+                rows_df = pd.DataFrame(st.session_state["bulk_generated_rows"])
+                rows_df = rows_df.rename(columns={
+                    "flight_number": "Flight",
+                    "airline_name": "Airline",
+                    "depart_airport_iata": "From",
+                    "dest_airport_iata": "To",
+                    "flight_date": "Date",
+                    "seat_number": "Seat",
+                    "class_name": "Class",
+                    "price": "Price (USD)",
+                    "booked_at": "Booked At",
+                })
+                st.write(f"**{len(rows_df)} booking(s) shown (most recent first):**")
+                st.dataframe(rows_df, use_container_width=True, height=300)
 
             st.divider()
             st.warning("**Clear All Bookings** — deletes every BOOKING, PAYMENT, TICKET, and REFUND row. Use only in demo/test environments.")
@@ -1460,8 +1517,7 @@ END; $$;""", language="sql")
                             "p_travel_date": str(e_date),
                             "p_class_name":  None if e_cls == "All" else e_cls,
                         }).execute()
-                        plan = _format_plan(res.data)
-                        st.code(plan or "(no plan returned)", language="text")
+                        _render_explain_comparison(res.data)
                     except Exception as e:
                         st.error(f"Error: {e}")
 
@@ -1475,8 +1531,7 @@ END; $$;""", language="sql")
             if st.button("Run EXPLAIN ANALYZE", key="btn_e_rev"):
                 try:
                     res = supabase.rpc("explain_revenue_report", {}).execute()
-                    plan = _format_plan(res.data)
-                    st.code(plan or "(no plan returned)", language="text")
+                    _render_explain_comparison(res.data)
                 except Exception as e:
                     st.error(f"Error: {e}")
 

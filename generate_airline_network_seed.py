@@ -8,8 +8,8 @@ from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client
 
-START_DATE = date(2026, 5, 1)
-END_DATE = date(2026, 6, 10)
+START_DATE = date(2026, 4, 1)
+END_DATE   = date(2026, 8, 31)
 TODAY = date(2026, 6, 8)
 
 DAY_NAME_TO_WEEKDAY = {
@@ -141,6 +141,18 @@ CLASS_LOAD = {
     "Economy": 0.62,
     "Business": 0.22,
     "First": 0.10,
+}
+
+# All bulk-generated bookings are owned by a single mock "pool" customer so the
+# three demo accounts (alice/bob/charlie) are not flooded in their My Bookings.
+POOL_EMAIL = "pool@demo.local"
+POOL_NAME = "Demo Pool"
+
+# Max confirmed bookings shown in each demo account's My Bookings tab.
+DEMO_KEEP = {
+    "alice@example.com": 3,
+    "bob@example.com": 2,
+    "charlie@example.com": 5,
 }
 
 BATCH_SIZE = 500
@@ -310,7 +322,7 @@ def create_schedules(supabase, airline_map, airport_map, aircraft_by_airline):
     return schedules
 
 
-def generate_flights(supabase, schedules, one_per_route=False):
+def generate_flights(supabase, schedules, one_per_route=False, one_per_month=False):
     print("\n[2] Generating flights (batched)...")
 
     existing_rows = supabase.table("FLIGHT").select("schedule_id, flight_date").execute().data
@@ -322,9 +334,15 @@ def generate_flights(supabase, schedules, one_per_route=False):
     for s in schedules:
         weekdays = parse_days_of_week(s["days_of_week"])
         d = START_DATE
+        months_done = set()  # used by one_per_month mode
 
         while d <= END_DATE:
             if d.weekday() in weekdays:
+                month_key = (d.year, d.month)
+                if one_per_month and month_key in months_done:
+                    d += timedelta(days=1)
+                    continue
+
                 key = (s["schedule_id"], d.isoformat())
                 if key not in existing_set:
                     depart_dt, arrival_dt = combine_datetimes(d, s["depart_time"], s["arrival_time"])
@@ -339,23 +357,76 @@ def generate_flights(supabase, schedules, one_per_route=False):
                     existing_set.add(key)
                     generated += 1
 
-                if one_per_route:
-                    break
+                    if one_per_route:
+                        break
+                    if one_per_month:
+                        months_done.add(month_key)
             d += timedelta(days=1)
 
     batch_insert(supabase, "FLIGHT", flight_rows)
     print(f"  Generated flights: {generated}")
 
 
-def generate_bookings(supabase, seat_class_map, seats_by_aircraft_class):
-    print("\n[3] Generating bookings/payment/tickets...")
+def ensure_pool_customer(supabase):
+    existing = supabase.table("CUSTOMER").select("customer_id").eq("email", POOL_EMAIL).execute().data
+    if existing:
+        return existing[0]["customer_id"]
 
-    customers = supabase.table("CUSTOMER").select("customer_id").execute().data
-    if not customers:
-        print("  No customers found. Skipping bookings.")
+    inserted = supabase.table("CUSTOMER").insert({
+        "email": POOL_EMAIL,
+        "password": "1234",
+        "name": POOL_NAME,
+    }).execute().data
+    print(f"  Created pool customer: {POOL_EMAIL}")
+    return inserted[0]["customer_id"]
+
+
+def assign_demo_bookings(supabase):
+    print("\n[4] Capping demo-account bookings (reassign from pool)...")
+
+    demo_rows = supabase.table("CUSTOMER").select("customer_id,email") \
+        .in_("email", list(DEMO_KEEP.keys())).execute().data
+    demo_id_by_email = {r["email"]: r["customer_id"] for r in demo_rows}
+
+    pool = supabase.table("CUSTOMER").select("customer_id").eq("email", POOL_EMAIL).execute().data
+    if not pool:
+        print("  No pool customer found. Skipping demo cap.")
         return
+    pool_id = pool[0]["customer_id"]
 
-    customer_ids = [c["customer_id"] for c in customers]
+    # Pool-owned confirmed bookings, newest flight first (most likely upcoming).
+    candidates = supabase.table("BOOKING") \
+        .select("booking_id, FLIGHT!inner(flight_date)") \
+        .eq("customer_id", pool_id).eq("status", "confirmed").execute().data
+    candidates.sort(key=lambda b: b["FLIGHT"]["flight_date"], reverse=True)
+
+    used = set()
+    for email, target in DEMO_KEEP.items():
+        demo_id = demo_id_by_email.get(email)
+        if not demo_id:
+            print(f"  Skipping {email}: account not in DB")
+            continue
+
+        existing = supabase.table("BOOKING").select("booking_id", count="exact") \
+            .eq("customer_id", demo_id).eq("status", "confirmed").execute().count or 0
+        need = max(0, target - existing)
+
+        moved = 0
+        for b in candidates:
+            if moved >= need:
+                break
+            if b["booking_id"] in used:
+                continue
+            supabase.table("BOOKING").update({"customer_id": demo_id}) \
+                .eq("booking_id", b["booking_id"]).execute()
+            used.add(b["booking_id"])
+            moved += 1
+
+        print(f"  {email}: {existing + moved}/{target} confirmed bookings")
+
+
+def generate_bookings(supabase, seat_class_map, seats_by_aircraft_class, pool_customer_id):
+    print("\n[3] Generating bookings/payment/tickets...")
 
     flights = supabase.table("FLIGHT").select(
         "flight_id, aircraft_id, flight_date, FLIGHT_SCHEDULE!inner(depart_airport_iata,dest_airport_iata,flight_number)"
@@ -427,7 +498,7 @@ def generate_bookings(supabase, seat_class_map, seats_by_aircraft_class):
                 booking_rows.append({
                     "booking_id": booking_id,
                     "flight_id": flight_id,
-                    "customer_id": random.choice(customer_ids),
+                    "customer_id": pool_customer_id,
                     "seat_id": seat_id,
                     "status": "confirmed",
                     "price": price,
@@ -464,6 +535,7 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Delete TICKET/REFUND/PAYMENT/BOOKING/FLIGHT first")
     parser.add_argument("--reset-schedules", action="store_true", help="Also delete FLIGHT_SCHEDULE first")
     parser.add_argument("--one-per-route", action="store_true", help="Generate exactly 1 FLIGHT per route")
+    parser.add_argument("--one-per-month", action="store_true", help="Generate 1 FLIGHT per route per calendar month")
     parser.add_argument("--with-bookings", action="store_true", help="Also generate BOOKING/PAYMENT/TICKET")
     args = parser.parse_args()
 
@@ -482,14 +554,22 @@ def main():
     airline_map, airport_map, aircraft_by_airline, seat_class_map, seats_by_aircraft_class = get_maps(supabase)
 
     schedules = create_schedules(supabase, airline_map, airport_map, aircraft_by_airline)
-    generate_flights(supabase, schedules, one_per_route=args.one_per_route)
+    generate_flights(supabase, schedules, one_per_route=args.one_per_route, one_per_month=args.one_per_month)
 
     if args.with_bookings:
-        generate_bookings(supabase, seat_class_map, seats_by_aircraft_class)
+        pool_id = ensure_pool_customer(supabase)
+        generate_bookings(supabase, seat_class_map, seats_by_aircraft_class, pool_id)
+        assign_demo_bookings(supabase)
 
     print("\nDone.")
     print(f"Date range: {START_DATE} ~ {END_DATE}")
-    print(f"Mode: {'one flight per route' if args.one_per_route else 'all valid operating days'}")
+    if args.one_per_route:
+        mode_label = "one flight per route"
+    elif args.one_per_month:
+        mode_label = "one flight per route per month"
+    else:
+        mode_label = "all valid operating days"
+    print(f"Mode: {mode_label}")
     print(f"Bookings generated: {'yes' if args.with_bookings else 'no'}")
 
 

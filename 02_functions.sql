@@ -645,10 +645,34 @@ CREATE OR REPLACE FUNCTION public.explain_search_flights(
 RETURNS SETOF text
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    v_sql text :=
+        'SELECT v.flight_id, v.flight_number, v.airline_name, '
+        '       v.depart_time, v.arrival_time, v.class_name, '
+        '       v.price, v.effective_price, v.stop_count, v.available_seats '
+        'FROM public."FLIGHT_AVAILABILITY_VIEW" v '
+        'WHERE v.depart_airport_iata = $1 '
+        '  AND v.dest_airport_iata   = $2 '
+        '  AND v.flight_date         = $3 '
+        '  AND ($4 IS NULL OR v.class_name = $4) '
+        '  AND v.available_seats > 0 '
+        'ORDER BY v.effective_price, v.depart_time';
 BEGIN
+    -- Plan WITH indexes (normal)
+    RETURN NEXT '=== With Indexes ===';
     RETURN QUERY EXECUTE
-        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) '
-        'SELECT * FROM public.search_flights($1, $2, $3, $4)'
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) ' || v_sql
+    USING p_dep_iata, p_arr_iata, p_travel_date, p_class_name;
+
+    RETURN NEXT '';
+    RETURN NEXT '=== Without Indexes (simulated: index scans disabled) ===';
+
+    -- Disable index and bitmap scans for the duration of this call only
+    SET LOCAL enable_indexscan  = off;
+    SET LOCAL enable_bitmapscan = off;
+
+    RETURN QUERY EXECUTE
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) ' || v_sql
     USING p_dep_iata, p_arr_iata, p_travel_date, p_class_name;
 END;
 $$;
@@ -657,10 +681,29 @@ CREATE OR REPLACE FUNCTION public.explain_revenue_report()
 RETURNS SETOF text
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    v_sql text :=
+        'SELECT v.flight_id, v.flight_number, v.airline_name, '
+        '       v.depart_airport_iata || '' -> '' || v.dest_airport_iata AS route, '
+        '       v.flight_date, v.revenue_month, v.revenue_quarter, '
+        '       v.class_name, v.revenue AS total_revenue, '
+        '       ROUND(100 * v.revenue / NULLIF(SUM(v.revenue) OVER (PARTITION BY v.flight_id), 0), 2) AS class_revenue_pct, '
+        '       v.class_load_factor_pct, v.flight_load_factor_pct '
+        'FROM public."REVENUE_STATS_VIEW" v '
+        'ORDER BY v.flight_date DESC, v.revenue DESC';
 BEGIN
+    RETURN NEXT '=== With Indexes ===';
     RETURN QUERY EXECUTE
-        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) '
-        'SELECT * FROM public.get_revenue_report()';
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) ' || v_sql;
+
+    RETURN NEXT '';
+    RETURN NEXT '=== Without Indexes (simulated: index scans disabled) ===';
+
+    SET LOCAL enable_indexscan  = off;
+    SET LOCAL enable_bitmapscan = off;
+
+    RETURN QUERY EXECUTE
+        'EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) ' || v_sql;
 END;
 $$;
 
