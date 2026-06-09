@@ -37,6 +37,7 @@ cse305/
 ├── 04_grants.sql           # RLS disable + anon privileges
 ├── seed_from_csv.py        # ETL: loads nycflights13 flights.csv → Supabase
 ├── flights.csv             # nycflights13 dataset (336,776 rows, not committed)
+├── run_demo.ps1            # One-command demo: network seed + CSV scale + launch app
 ├── app.py                  # Streamlit application
 ├── .env                    # Supabase credentials (not committed)
 └── README.md
@@ -125,6 +126,26 @@ Open `http://localhost:8501` in your browser.
 | App shows no airports after reset | `03_seed_sample_data.sql` was not run. | Re-run all 4 SQL files in order. |
 | Bulk Generator returns 0 new bookings | All (flight × seat) slots are already taken. | Re-run the 4 SQL files + seed script to reset data, then try again. |
 | EXPLAIN shows "Function Scan" only | `02_functions.sql` has not been re-run after the fix. | Re-run `02_functions.sql` + `04_grants.sql` in SQL Editor. |
+
+### Quick Start (PowerShell wrapper)
+
+Once the four SQL files have been loaded (Step 3), `run_demo.ps1` runs the demo-data seed,
+loads the large CSV scale dataset, and launches Streamlit in a single step:
+
+```powershell
+./run_demo.ps1
+```
+
+It is equivalent to running these three commands in sequence:
+
+```powershell
+python generate_airline_network_seed.py --reset --reset-schedules --one-per-month --with-bookings
+python seed_from_csv.py --with-flights --with-history 5000
+streamlit run app.py
+```
+
+> The middle step loads the full 336k-flight nycflights13 dataset for the EXPLAIN ANALYZE
+> demo. Omit it (run only Step 4 + `streamlit run app.py`) if you only need the core demo.
 
 ### Full Reset Procedure
 
