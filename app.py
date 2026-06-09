@@ -753,11 +753,19 @@ def staff_dashboard():
 
         # ── Create Flights ───────────────────────
         with st.expander("Generate Flights"):
+            search_term = st.text_input("Search Flight Number", key="schedule_search")
+
             try:
-                all_schedules = supabase.table("FLIGHT_SCHEDULE") \
-                    .select("schedule_id, flight_number, depart_airport_iata, "
-                            "dest_airport_iata, depart_time, days_of_week, valid_from, valid_until") \
-                    .execute().data
+                if search_term:
+                    all_schedules = supabase.table("FLIGHT_SCHEDULE") \
+                        .select("schedule_id, flight_number, depart_airport_iata, "
+                                "dest_airport_iata, depart_time, days_of_week, valid_from, valid_until") \
+                        .ilike("flight_number", f"%{search_term}%").execute().data
+                else:
+                    all_schedules = supabase.table("FLIGHT_SCHEDULE") \
+                        .select("schedule_id, flight_number, depart_airport_iata, "
+                                "dest_airport_iata, depart_time, days_of_week, valid_from, valid_until") \
+                        .execute().data
             except Exception as e:
                 st.error(f"Failed to load schedules: {e}")
                 all_schedules = []
