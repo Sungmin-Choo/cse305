@@ -264,6 +264,56 @@ ON CONFLICT (email) DO NOTHING;
 
 
 -- ============================================================
+-- BOOKING CLEANUP: reassign bulk bookings to bulk_test sink
+-- ============================================================
+-- Keeps alice=3, bob=2, charlie=5 most-recent bookings each;
+-- moves all other bookings to bulk_test@demo.com.
+-- Safe to run on a fresh DB (no bookings → 0 rows updated).
+-- Re-run this block in Supabase SQL Editor after any bulk load.
+-- ============================================================
+DO $$
+DECLARE
+    v_dummy uuid;
+BEGIN
+    SELECT customer_id INTO v_dummy
+    FROM public."CUSTOMER" WHERE email = 'bulk_test@demo.com';
+
+    IF v_dummy IS NULL THEN
+        RAISE NOTICE 'bulk_test@demo.com not found — skipping booking reassignment';
+        RETURN;
+    END IF;
+
+    UPDATE public."BOOKING"
+    SET customer_id = v_dummy
+    WHERE customer_id IN (
+        SELECT customer_id FROM public."CUSTOMER"
+        WHERE email IN ('alice@example.com','bob@example.com','charlie@example.com')
+    )
+    AND booking_id NOT IN (
+        SELECT booking_id FROM public."BOOKING" b
+        JOIN public."CUSTOMER" c USING (customer_id)
+        WHERE c.email = 'alice@example.com'
+        ORDER BY b.booked_at DESC LIMIT 3
+    )
+    AND booking_id NOT IN (
+        SELECT booking_id FROM public."BOOKING" b
+        JOIN public."CUSTOMER" c USING (customer_id)
+        WHERE c.email = 'bob@example.com'
+        ORDER BY b.booked_at DESC LIMIT 2
+    )
+    AND booking_id NOT IN (
+        SELECT booking_id FROM public."BOOKING" b
+        JOIN public."CUSTOMER" c USING (customer_id)
+        WHERE c.email = 'charlie@example.com'
+        ORDER BY b.booked_at DESC LIMIT 5
+    );
+
+    RAISE NOTICE 'Booking reassignment complete (alice≤3, bob≤2, charlie≤5 kept).';
+END;
+$$;
+
+
+-- ============================================================
 -- STAFF (1)
 -- ============================================================
 INSERT INTO public."STAFF" (email, password, name, role)

@@ -1289,7 +1289,8 @@ END; $$;""", language="sql")
                 locked_flt_id = st.session_state.get("d2_locked_flt_id", flt_id)
                 if st.button("Attempt Booking (should be blocked by trigger)", key="btn_d2_book"):
                     try:
-                        cust = supabase.table("CUSTOMER").select("customer_id").limit(1).execute().data
+                        cust = supabase.table("CUSTOMER").select("customer_id") \
+                            .eq("email", "bulk_test@demo.com").limit(1).execute().data
                         flt_ac = supabase.table("FLIGHT").select("aircraft_id, status") \
                             .eq("flight_id", locked_flt_id).limit(1).execute().data
                         seat = []

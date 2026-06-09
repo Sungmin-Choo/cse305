@@ -589,9 +589,15 @@ def phase_g_history(supabase: Client, past_flights: list[dict],
         print("  No past flights found — skipping")
         return
 
-    customers = supabase.table("CUSTOMER").select("customer_id").execute().data
+    customers = (
+        supabase.table("CUSTOMER")
+        .select("customer_id")
+        .eq("email", "bulk_test@demo.com")
+        .execute()
+        .data
+    )
     if not customers:
-        print("  No customers found — skipping")
+        print("  bulk_test@demo.com not found — run 03_seed_sample_data.sql first, skipping history")
         return
     customer_ids = [c["customer_id"] for c in customers]
 
