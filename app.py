@@ -1294,8 +1294,17 @@ END; $$;""", language="sql")
                             .eq("flight_id", locked_flt_id).limit(1).execute().data
                         seat = []
                         if flt_ac:
-                            seat = supabase.table("SEAT_INVENTORY").select("seat_id") \
-                                .eq("aircraft_id", flt_ac[0]["aircraft_id"]).limit(1).execute().data
+                            all_seats = supabase.table("SEAT_INVENTORY").select("seat_id") \
+                                .eq("aircraft_id", flt_ac[0]["aircraft_id"]).execute().data
+                            taken = {
+                                r["seat_id"]
+                                for r in supabase.table("BOOKING")
+                                    .select("seat_id")
+                                    .eq("flight_id", locked_flt_id)
+                                    .neq("status", "cancelled")
+                                    .execute().data
+                            }
+                            seat = [s for s in all_seats if s["seat_id"] not in taken][:1]
                         if cust and seat:
                             supabase.rpc("create_booking", {
                                 "p_customer_id": cust[0]["customer_id"],

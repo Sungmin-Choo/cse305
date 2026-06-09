@@ -598,10 +598,11 @@ BEGIN
 
         EXIT WHEN v_flight_id IS NULL;  -- no more available seats anywhere
 
-        -- Pick a random customer
+        -- Always assign to the dedicated bulk-test sink account so demo
+        -- accounts (alice/bob/charlie) are not polluted with test bookings.
         SELECT customer_id INTO v_customer
         FROM public."CUSTOMER"
-        ORDER BY random()
+        WHERE email = 'bulk_test@demo.com'
         LIMIT 1;
 
         EXIT WHEN v_customer IS NULL;

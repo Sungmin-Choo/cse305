@@ -252,13 +252,14 @@ ON CONFLICT (schedule_id, stop_order) DO NOTHING;
 
 
 -- ============================================================
--- CUSTOMERS (3)
+-- CUSTOMERS (3 demo + 1 bulk-data sink)
 -- ============================================================
 INSERT INTO public."CUSTOMER" (email, password, name, passport)
 VALUES
-  ('alice@example.com',   '1234', 'Alice Kim',   'M12345678'),
-  ('bob@example.com',     '1234', 'Bob Johnson', 'N98765432'),
-  ('charlie@example.com', '1234', 'Charlie Lee', 'P55512345')
+  ('alice@example.com',   '1234', 'Alice Kim',      'M12345678'),
+  ('bob@example.com',     '1234', 'Bob Johnson',    'N98765432'),
+  ('charlie@example.com', '1234', 'Charlie Lee',    'P55512345'),
+  ('bulk_test@demo.com',  '1234', 'Bulk Test User', 'X00000000')
 ON CONFLICT (email) DO NOTHING;
 
 
@@ -308,5 +309,5 @@ $$;
 -- SELECT flight_number FROM public."FLIGHT_SCHEDULE"; -- EK350, BA284, EK101, EK201, EK601, KE101, KE202, KE017
 -- SELECT airport_iata, stop_order FROM public."STOPOVER"; -- 3 rows
 -- SELECT COUNT(*) FROM public."FLIGHT";            -- demo flights for next 60 days
--- SELECT email, name FROM public."CUSTOMER";       -- 3 rows
+-- SELECT email, name FROM public."CUSTOMER";       -- 4 rows (3 demo + bulk_test)
 -- SELECT email, name, role FROM public."STAFF";    -- 1 row
